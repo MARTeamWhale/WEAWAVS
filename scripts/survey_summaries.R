@@ -2,8 +2,8 @@
 # WEAWAVS Survey Summaries
 ##############################################################
 
-setwd("C:/Users/gavrilchukk/Desktop/WEAWAVS_repo/Survey_summaries")
-project_path <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING/"
+setwd("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING")
+#project_path <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING/"
 
 
 #----LOAD PACKAGES----
@@ -17,6 +17,7 @@ library(rmarkdown)
 library(leaflet)
 library(stringr)
 library(data.table)
+library(here)
 
 
 #----LOAD DATA----
@@ -24,11 +25,11 @@ library(data.table)
 #----Planned Transects----
 
 # Import planned transects (shapefile)
-transects_shp <- st_read(file.path("C:/Users/gavrilchukk/Desktop/WEAWAVS_repo/Survey_design/Planned_transects_Scenario2_Spring2026.shp"),
+transects_shp <- st_read(file.path("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey design/WEAWAVS_2026-04-10_DFifield/Planned_transects_Scenario2_Spring2026.shp"),
                          quiet = TRUE)
 
 # Import planned transects (csv file; refer to "survey_design_metrics.R" for generation of survey metrics):
-transects_df <- read.csv("C:/Users/gavrilchukk/Desktop/WEAWAVS_repo/Survey_design/Scenario 2_13-day_Spring 2026_transects_with_metrics.csv")
+transects_df <- read.csv("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey design/Scenario 2_13-day_Spring 2026_transects_with_metrics.csv")
 
 # Calculate some additional metrics
 transects_df1 <- transects_df |>
@@ -48,7 +49,7 @@ ymax <- study.bbox[4]
 #----GPS----
 
 # Mysticetus GPS files
-mysti_files <- list.files(file.path(project_path, "Mysti_GPS"),
+mysti_files <- list.files(file.path(paste0(here(), "/Mysti_GPS")),
                           pattern = "csv$", full.names = TRUE)
 
 # Combine Mysticetus GPS files
@@ -59,10 +60,11 @@ gps_mysti <- map_df(mysti_files, read_csv, show_col_types = FALSE) |>
          vessel_lon_m = Longitude,
          sog_kt = `Speed Over Ground (kts)`,
          cog_t = `Course Over Ground (T)`) |>
-  select(datetime_utc, vessel_lat_m, vessel_lon_m, sog_kt, cog_t)
+  select(datetime_utc, vessel_lat_m, vessel_lon_m, sog_kt, cog_t) |>
+  arrange(datetime_utc)
 
 # Garmin GPS files
-garmin_files <- list.files(file.path(project_path, "Garmin_GPS"),
+garmin_files <- list.files(file.path(paste0(here(), "/Garmin_GPS")),
                            pattern = "\\.gpx$", full.names = TRUE)
 
 # Combine Garmin GPS files
@@ -73,16 +75,17 @@ gps_garmin <- map_df(garmin_files, function(f){
   coords <- st_coordinates(df)
   
   df |>
-    mutate(datetime_utc = force_tz(datetime_utc, tzone = "UTC"),
-      # Use "_g" to mark it as coming from Garmin (just helps error-check after the GPS sources get joined)
+    mutate(datetime_utc = force_tz(time, "UTC"),
       vessel_lon_g = coords[,1],
       vessel_lat_g = coords[,2]) |>
     st_drop_geometry() |>
-    select(datetime_utc, vessel_lat_g, vessel_lon_g)
+    select(datetime_utc, vessel_lat_g, vessel_lon_g) |>
+    arrange(datetime_utc)
+  
 })
 
 # Export Garmin track only
-write.csv(gps_garmin, file = "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING/Garmin_GPS/all_garmin_tracks.csv")
+write.csv(gps_garmin, file = paste0(here(), "/Garmin_GPS/all_garmin_tracks.csv"))
 
 # Check time interval between successive GPS positions
 time_int_check <- gps_garmin |>
@@ -92,15 +95,9 @@ time_int_check <- gps_garmin |>
 
 summary(time_int_check$time_diff_sec)
 
-# Two large time gaps in Garmin GPS track:
-# (Nat mentioned these files still exist on the Garmin GPS units, but didn't get exported/saved to the data directory)
-# (1) 2026-05-04 18:56:49 UTC to 2026-05-05 02:22:33 UTC (26744 sec or 445.7 min or 7.43 h)
-# (2) 2026-05-07 19:14:58 UTC to 2026-05-08 02:38:04 UTC (26586 sec or 443 min or 7.385 h)
-
-
 
 # Import ship's NAV GPS (provided by Teleost crew at end of survey)
-teleost_gps <- read.csv("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING/Teleost_NAV_GPS/Teleost_VoyageLog20260512121847.csv")
+teleost_gps <- read.csv(paste0(here(),"/Teleost_NAV_GPS/Teleost_VoyageLog20260512121847.csv"))
 
 # Check time interval between successive GPS positions
 teleost_gps1 <- teleost_gps |>
@@ -123,7 +120,7 @@ check <- teleost_gps1 |>
 # Import ship's NAV GPS (provided via OpenCPN run from a TeamWhale laptop)
 
 # Teleost's NAV OpenCPN gpx files
-teleost_files <- list.files(file.path(project_path, "Teleost_NAV_GPS/OpenCPN"),
+teleost_files <- list.files(file.path(paste0(here(), "/Teleost_NAV_GPS/OpenCPN")),
                            pattern = "\\.gpx$", full.names = TRUE)
 
 # Combine Teleost GPS files
@@ -131,15 +128,11 @@ teleost_files <- list.files(file.path(project_path, "Teleost_NAV_GPS/OpenCPN"),
 # Read and combine
 gps_teleost <- map_df(teleost_files, function(f) {
   
-  df <- st_read(f,
-                layer = "track_points",
-                quiet = TRUE)
+  df <- st_read(f, layer = "track_points",quiet = TRUE)
   
-  # Extract coordinates
   coords <- st_coordinates(df)
   
-  # Convert to dataframe and bind with attributes
-  df_out <- df |>
+  df |>
     st_drop_geometry() |>
     bind_cols(as.data.frame(coords)) |>
     
@@ -147,19 +140,14 @@ gps_teleost <- map_df(teleost_files, function(f) {
   ###### NEED TO FIGURE OUT WHAT TIME ZONE THE SHIP'S TRACK IS IN! ##
   ###################################################################
   
-  mutate(datetime_utc = force_tz(datetime_utc, tzone = "UTC"),
-         vessel_lat_t = Y, # "t" for Teleost
-         vessel_lon_t = X) |>
-  select(time, X, Y) 
-         # optional: keep filename
-         #source_file = basename(f))
+    mutate(datetime_utc = force_tz(time, "UTC"),
+      vessel_lat_t = Y,
+      vessel_lon_t = X) |>
+    select(datetime_utc, vessel_lat_t,vessel_lon_t) |>
+    arrange(datetime_utc)
   
-  return(df_out)
 })
-
-
-
-
+    
 # Combine Mysticetus and Garmin GPS
 gps <- bind_rows(gps_mysti, gps_garmin) |>
   arrange(datetime_utc) |>
@@ -184,8 +172,9 @@ summary(time_int_check$time_diff_sec)
 #----EFFORT----
 
 # List all EffortEnv csv files
-effort_files <- list.files(file.path(project_path, "Mysti_data"),
-                           pattern = "EffortEnv\\.csv$", recursive = TRUE, full.names = TRUE)
+effort_files <- list.files(file.path(paste0(here(), "/Mysti_data")),
+                           pattern = "EffortEnv\\.csv$", 
+                           recursive = TRUE, full.names = TRUE)
 
 # Import & combine all EffortEnv files
 effort <- effort_files |>
@@ -200,7 +189,7 @@ effort1 <- effort |>
   arrange(`Datetime_UTC_locked (UTC)`) |>
   # Check for any missing values (NA or blank) in the Datetime_UTC (UTC) column, flag those
   mutate(datetime_missing = is.na(`Datetime_UTC (UTC)`) | trimws(`Datetime_UTC (UTC)`) == "",
-         # Check for repeated datetimes in the `Datetime_UTC (UTC)`coumn -- due to using the shortcut "Ctl-Shft-+" which copies the previous row
+         # Check for repeated datetimes in the `Datetime_UTC (UTC)`column -- due to using the shortcut "Ctl-Shft-+" which copies the previous row
          datetime_duplicates = coalesce(`Datetime_UTC (UTC)` == lag(`Datetime_UTC (UTC)`), FALSE)) |>
   relocate(c(datetime_missing, datetime_duplicates))
 
@@ -375,7 +364,7 @@ unique(sort(gps_effort1$Transect_ID))
 table(gps_effort1$date_adt, gps_effort1$Strata)
 
 # Export
-write_csv(gps_effort1, file = "tables/spring2026_gps_track_effortenv_FINAL.csv")
+write_csv(gps_effort1, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL.csv"))
 
 # Export different versions for easier QGIS mapping
 
@@ -383,35 +372,36 @@ write_csv(gps_effort1, file = "tables/spring2026_gps_track_effortenv_FINAL.csv")
 g1 <- gps_effort1 |>
   filter(avail_effort_window == TRUE) 
 
-write_csv(g1, file = "tables/spring2026_gps_track_effortenv_FINAL_avail_effort_window_only.csv")
+write_csv(g1, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_avail_effort_window_only.csv"))
 
 # Realized effort window only
 g2 <- gps_effort1 |>
   filter(real_effort_window == TRUE) 
 
-write_csv(g2, file = "tables/spring2026_gps_track_effortenv_FINAL_real_effort_window_only.csv")
+write_csv(g2, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_real_effort_window_only.csv"))
 
 # Available observation window (12.5h per day) within FMB only
 g3 <- gps_effort1 |>
   filter(avail_effort_window == TRUE) |>
   filter(Strata == "FMB")
 
-write_csv(g3, file = "tables/spring2026_gps_track_effortenv_FINAL_FMB_avail_effort_window_only.csv")
+write_csv(g3, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_FMB_avail_effort_window_only.csv"))
 
 # Available observation window (12.5h per day) within SB only
 g4 <- gps_effort1 |>
   filter(avail_effort_window == TRUE) |>
   filter(Strata == "SB")
 
-write_csv(g4, file = "tables/spring2026_gps_track_effortenv_FINAL_SB_avail_effort_window_only.csv")
+write_csv(g4, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_SB_avail_effort_window_only.csv"))
 
 
 
 #----SIGHTINGS----
 
 # List all Sighting csv files
-sight_files <- list.files(file.path(project_path, "Mysti_data"),
-                          pattern = "Sighting\\.csv$", recursive = TRUE, full.names = TRUE)
+sight_files <- list.files(file.path(paste0(here(), "/Mysti_data")),
+                          pattern = "Sighting\\.csv$", 
+                          recursive = TRUE, full.names = TRUE)
 
 # Import & combine all Sighting files
 sight <- sight_files |>
@@ -463,8 +453,6 @@ sight1 <- sight |>
          Sgt_lon = coalesce(Sgt_lon, vessel_lon)) |>
   # Remove confirmed or possible resights (duplicates)
   filter(!Resight %in% c("Yes", "Possible")) |>
-  # Keep only marine mammal species
-  filter(!Species %in% c("Mola mola", "White shark", "Other")) |>
   # Re-name Species for those which were dead
   mutate(Species = if_else(!is.na(Notes) & str_detect(Notes, regex("dead", ignore_case = TRUE)),
                            paste0(Species, " (dead)"), 
@@ -476,11 +464,13 @@ sight1 <- sight |>
   # Check for any missing values (NA or blank) in the Datetime_UTC (UTC) column, flag those
   mutate(datetime_missing = is.na(`Datetime_UTC (UTC)`) | trimws(`Datetime_UTC (UTC)`) == "",
          # Check for repeated datetimes in the `Datetime_UTC (UTC)`coumn -- due to using the shortcut "Ctl-Shft-+" which copies the previous row
-         datetime_duplicates = coalesce(`Datetime_UTC (UTC)` == lag(`Datetime_UTC (UTC)`), FALSE)) |>
+         datetime_duplicates = coalesce(`Datetime_UTC (UTC)` == lag(`Datetime_UTC (UTC)`), FALSE),
+         # Check whether the rows without Yes/No in Photos actually had photos; if not, assign NA to "No"
+         Photos_taken = replace_na(Photos_taken, "No")) |>
   relocate(c(datetime_missing, datetime_duplicates)) |>
   # Select to arrange column order
   select(Vessel, Strata, "Datetime_UTC_locked (UTC)", "Datetime_UTC (UTC)", datetime_utc, datetime_adt,
-         date_adt, GPS_pos, vessel_lat, vessel_lat, Sgt_pos, Sgt_lat, Sgt_lon,
+         date_adt, vessel_lat, vessel_lon, Sgt_lat, Sgt_lon,
          Sgt_type, Sgt_side, Observer, Obs_platform, Distance_tool, 
          Reticles, Distance_m, Angle_rel, Angle_num, Angle_abs, Distance_tool, PSD,
          Species, Min_count, Best_count, Max_count, Resight, Photos_taken, 
@@ -488,7 +478,9 @@ sight1 <- sight |>
          datetime_missing, datetime_duplicates)
 
 
+#...............................................................................
 # QA/QC
+#...............................................................................
 
 # Manually verify all "datetime_missing" & "datetime_duplicates" columns marked as TRUE
 # Verify the Notes to see if the `Datetime_UTC (UTC)` was manually adjusted
@@ -548,8 +540,31 @@ sight2 |>
   ggplot(aes(x = Distance_m, y = Reticles)) +
   geom_point()
 
+#...............................................................................
+
+
 # Export
-write_csv(sight2, file = "tables/spring2026_MM_sightings_FINAL.csv")
+
+# (1) Marine mammal species only
+sight3 <- sight2 |>
+  filter(!Species %in% c("Mola mola", "White shark", "Other", "Other (dead)"))
+
+# Export
+write_csv(sight3, file = paste0(here(),"/Data_summaries/tables/spring2026_MM_sightings_FINAL.csv"))
+
+# (2) All sightings (except "Other") to provide to DFO MAR's Whale Sightings Database (WSDB)
+# (also, remove unnecessary columns and add a couple of helpful columns to identify data collector & survey)
+sight4 <- sight3 |>
+  filter(!Species %in% c("Other", "Other (dead)")) |>
+  mutate(Data_collector = "DFO_Maritimes_CRMP",
+         Survey = "WEAWAVS_Spring2026") |>
+  select(Data_collector, Survey, Vessel, Strata, datetime_utc, datetime_adt,
+         vessel_lat, vessel_lon, Sgt_lat, Sgt_lon, Sgt_type, Sgt_side, Observer,
+         Species, Min_count, Best_count, Max_count,
+         Photos_taken, Camera, Frame_first, Frame_last, Notes)
+
+# Export
+write_csv(sight4, file = paste0(here(),"/Data_summaries/tables/WEAWAVS_Spring2026_Sightings_WSDB.csv"))
 
 
 
@@ -567,13 +582,13 @@ gps_effort2 <- gps_effort1 |>
   rename(gps_datetime_adt = datetime_adt)
 
 # Join gps_effort2 to sight2 (to have the relevant effort/env variables associated with the sightings) 
-sight_gps_effort <- sight2 |> 
+sight_gps_effort <- sight3 |> 
   left_join(gps_effort2, join_by(closest(datetime_adt >= gps_datetime_adt))) |> 
   mutate(time_diff_sec = abs(as.numeric(datetime_adt - gps_datetime_adt, units = "secs")), 
          time_diff_flag = time_diff_sec > 5)
   
 # Export
-write_csv(sight_gps_effort, file = "tables/spring2026_MM_sightings_gps_effort_FINAL.csv")
+write_csv(sight_gps_effort, file = paste0(here(), "/Data_summaries/tables/spring2026_MM_sightings_gps_effort_FINAL.csv"))
 
 
 
