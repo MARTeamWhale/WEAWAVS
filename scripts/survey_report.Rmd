@@ -1,0 +1,95 @@
+# RMarkdown REPORT
+
+---
+  title: "WEAWAVeS End-of-day Report"
+date: "`r params$survey_date`"
+output:
+  html_document:
+  toc: true
+toc_float: true
+theme: cosmo
+params:
+  survey_date: NULL
+gps_effort: NULL
+effort_summary: NULL
+sight_daily: NULL
+sight_cum: NULL
+transects: NULL
+---
+
+# Setup
+
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(knitr)
+
+Survey Maps
+
+
+leaflet() %>%
+  addProviderTiles(providers$Esri.OceanBasemap) %>%
+  
+  addPolylines(
+    data = params$transects,
+    color = "grey",
+    weight = 1,
+    opacity = 0.4,
+    group = "Planned Transects"
+  ) %>%
+  
+  addCircleMarkers(
+    data = params$sight_daily,
+    lng = ~as.numeric(Sgt_lon),
+    lat = ~as.numeric(Sgt_lat),
+    radius = 4,
+    color = "purple",
+    popup = ~paste(Species, "Count:", Best_count),
+    group = "Sightings"
+  )
+
+
+Effort Summary
+
+
+kable(
+  params$effort_summary %>%
+    mutate(across(where(is.numeric), ~round(.x, 1))),
+  caption = "Daily Effort (km)"
+)
+
+
+Daily Sightings
+
+
+daily_summary <- params$sight_daily %>%
+  group_by(Species) %>%
+  summarise(
+    sightings = n(),
+    total_count = sum(as.numeric(Best_count), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+kable(daily_summary, caption = "Daily Sightings Summary")
+
+
+Cumulative Sightings
+
+kable(
+  params$sight_cum,
+  caption = "Cumulative Sightings Summary"
+)
+
+PSD Histogram
+
+psd_df <- params$sight_daily %>%
+  mutate(PSD = as.numeric(`PSD (m)`)) %>%
+  filter(!is.na(PSD))
+
+ggplot(psd_df, aes(x = PSD)) +
+  geom_histogram(binwidth = 100) +
+  theme_minimal() +
+  labs(title = "Perpendicular Sighting Distance (PSD)", x = "Distance (m)")
+
+
+
