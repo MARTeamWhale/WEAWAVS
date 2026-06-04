@@ -554,7 +554,7 @@ write_csv(sight3, file = paste0(here(),"/Data_summaries/tables/spring2026_MM_sig
 
 # (2) All sightings (except "Other") to provide to DFO MAR's Whale Sightings Database (WSDB)
 # (also, remove unnecessary columns and add a couple of helpful columns to identify data collector & survey)
-sight4 <- sight3 |>
+sight4 <- sight2 |>
   filter(!Species %in% c("Other", "Other (dead)")) |>
   mutate(Data_collector = "DFO_Maritimes_CRMP",
          Survey = "WEAWAVS_Spring2026") |>
@@ -563,8 +563,10 @@ sight4 <- sight3 |>
          Species, Min_count, Best_count, Max_count,
          Photos_taken, Camera, Frame_first, Frame_last, Notes)
 
+unique(sight4$Species)
+
 # Export
-write_csv(sight4, file = paste0(here(),"/Data_summaries/tables/WEAWAVS_Spring2026_Sightings_WSDB.csv"))
+write_csv(sight4, file = paste0(here(),"/Data_summaries/tables/WEAWAVS_Spring2026_Sightings_WSDB_updated20260604.csv"))
 
 
 
