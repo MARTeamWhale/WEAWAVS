@@ -297,7 +297,7 @@ gps_effort <- gps |>
   fill(c(Strata, Effort, start.effort_adt, end.effort_adt,
          Transect_ID, Port_obs, Stb_obs, BigEye_obs, Data_recorder,
          Sea_state, Swell, Port_vis, Stb_vis, Precipitation, Glare_int,
-         Glare_left, Glare_right, sog_kt, cog_t,), .direction = "down") |>
+         Glare_left, Glare_right, sog_kt, cog_t), .direction = "down") |>
   # Fill daily bounds upward
   fill(c(start.effort_adt, end.effort_adt), .direction = "up") |>
   # Define 'realized' effort window
@@ -411,7 +411,7 @@ sight <- sight_files |>
 
 # Data wrangling
 sight1 <- sight |>
-  rename(PSD = "PSD (m)",
+  rename(PSD_m = "PSD (m)",
          Distance_m = "Distance (m)") |>
   mutate(datetime_utc = ymd_hms(`Datetime_UTC (UTC)`, tz = "UTC"),
          # Convert to Atlantic Daylight time
@@ -472,7 +472,7 @@ sight1 <- sight |>
   select(Vessel, Strata, "Datetime_UTC_locked (UTC)", "Datetime_UTC (UTC)", datetime_utc, datetime_adt,
          date_adt, vessel_lat, vessel_lon, Sgt_lat, Sgt_lon,
          Sgt_type, Sgt_side, Observer, Obs_platform, Distance_tool, 
-         Reticles, Distance_m, Angle_rel, Angle_num, Angle_abs, Distance_tool, PSD,
+         Reticles, Distance_m, Angle_rel, Angle_num, Angle_abs, Distance_tool, PSD_m,
          Species, Min_count, Best_count, Max_count, Resight, Photos_taken, 
          Camera, Frame_first, Frame_last, Notes, QAQC_notes,
          datetime_missing, datetime_duplicates)
