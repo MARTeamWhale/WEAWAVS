@@ -1,9 +1,25 @@
-##############################################################
-# WEAWAVS Survey Summaries
-##############################################################
+################################################################################
+#
+# Script purpose: Error-checking of vessel survey effort and marine mammal sightings data
+# Program: DFO Maritimes - Cetacean Research and Monitoring Program (CRMP)
+# Project: Wind Energy Area Wildlife Assessment Vessel Surveys (WEAWAVS)
+# Author: Katherine Gavrilchuk
+# Affiliation: Fisheries and Oceans Canada
+# Contact: katherine.gavrilchuk@dfo-mpo.gc.ca
+# Last updated: August 5, 2026
+# R version: 4.6.1
+#
+################################################################################
 
-setwd("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING")
-#project_path <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING/"
+
+#----SET WORKING DIRECTORY & PATH TO WORKING DATA----
+
+setwd("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/")
+
+# Spring
+#path2data <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING"
+# Summer
+path2data <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Summer2026_2026-07-17_FINAL_WORKING"
 
 
 #----LOAD PACKAGES----
@@ -17,27 +33,10 @@ library(rmarkdown)
 library(leaflet)
 library(stringr)
 library(data.table)
-library(here)
 
 
-#----LOAD DATA----
+#----DEFINE STUDY AREA----
 
-#----Planned Transects----
-
-# Import planned transects (shapefile)
-transects_shp <- st_read(file.path("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey design/WEAWAVS_2026-04-10_DFifield/Planned_transects_Scenario2_Spring2026.shp"),
-                         quiet = TRUE)
-
-# Import planned transects (csv file; refer to "survey_design_metrics.R" for generation of survey metrics):
-transects_df <- read.csv("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey design/Scenario 2_13-day_Spring 2026_transects_with_metrics.csv")
-
-# Calculate some additional metrics
-transects_df1 <- transects_df |>
-  mutate(total_transect_km = sum(unique(Transect_km))) |>
-  # Round values for reporting
-  mutate(across(ends_with("km"), ~ round(.x, 1)))
-
-# Study area bounding box
 study.bbox <- c(-63.907471, 43.771094, -58.864746, 47.055154)
 
 xmin <- study.bbox[1]
@@ -46,11 +45,22 @@ xmax <- study.bbox[3]
 ymax <- study.bbox[4]
 
 
+#----LOAD DATA----
+
+
+#----Planned Transects----
+
+# Planned transects (shapefile)
+transects_shp <- st_read(file.path(paste0(getwd(), "/Survey design/WEAWAVS_2026-04-10_DFifield/Planned_transects_Scenario2_Spring2026.shp")), quiet = TRUE)
+
+# Planned transects with metrics (csv)
+transects_df <- read.csv(paste0(getwd(),"/Survey design/Scenario2_13-day_transects_with_metrics.csv"))
+
+
 #----GPS----
 
 # Mysticetus GPS files
-mysti_files <- list.files(file.path(paste0(here(), "/Mysti_GPS")),
-                          pattern = "csv$", full.names = TRUE)
+mysti_files <- list.files(file.path(paste0(path2data, "/Mysti_GPS")), pattern = "csv$", full.names = TRUE)
 
 # Combine Mysticetus GPS files
 gps_mysti <- map_df(mysti_files, read_csv, show_col_types = FALSE) |>
@@ -64,8 +74,7 @@ gps_mysti <- map_df(mysti_files, read_csv, show_col_types = FALSE) |>
   arrange(datetime_utc)
 
 # Garmin GPS files
-garmin_files <- list.files(file.path(paste0(here(), "/Garmin_GPS")),
-                           pattern = "\\.gpx$", full.names = TRUE)
+garmin_files <- list.files(file.path(paste0(path2data, "/Garmin_GPS")), pattern = "\\.gpx$", full.names = TRUE)
 
 # Combine Garmin GPS files
 gps_garmin <- map_df(garmin_files, function(f){
@@ -85,7 +94,7 @@ gps_garmin <- map_df(garmin_files, function(f){
 })
 
 # Export Garmin track only
-write.csv(gps_garmin, file = paste0(here(), "/Garmin_GPS/all_garmin_tracks.csv"))
+#write.csv(gps_garmin, file = paste0(path2data, "/Garmin_GPS/all_garmin_tracks.csv"))
 
 # Check time interval between successive GPS positions
 time_int_check <- gps_garmin |>
@@ -97,7 +106,7 @@ summary(time_int_check$time_diff_sec)
 
 
 # Import ship's NAV GPS (provided by Teleost crew at end of survey)
-teleost_gps <- read.csv(paste0(here(),"/Teleost_NAV_GPS/Teleost_VoyageLog20260512121847.csv"))
+teleost_gps <- read.csv(paste0(path2data(),"/Teleost_NAV_GPS/Teleost_VoyageLog20260512121847.csv"))
 
 # Check time interval between successive GPS positions
 teleost_gps1 <- teleost_gps |>
@@ -117,10 +126,10 @@ check <- teleost_gps1 |>
   arrange(time_diff_sec)
 
 
-# Import ship's NAV GPS (provided via OpenCPN run from a TeamWhale laptop)
+# Import ship's NAV GPS (collected via OpenCPN run from a TeamWhale laptop)
 
 # Teleost's NAV OpenCPN gpx files
-teleost_files <- list.files(file.path(paste0(here(), "/Teleost_NAV_GPS/OpenCPN")),
+teleost_files <- list.files(file.path(paste0(path2data(), "/Teleost_NAV_GPS/OpenCPN")),
                            pattern = "\\.gpx$", full.names = TRUE)
 
 # Combine Teleost GPS files
@@ -158,13 +167,40 @@ gps <- bind_rows(gps_mysti, gps_garmin) |>
   # There are some duplicates in the Mysticetus GPS rows
   distinct() # n = 6795 duplicate rows removed; sometimes duplicates occurred if ship was stationary for longer periods
 
-# Check time interval between successive GPS positions
-time_int_check2 <- gps |>
-  arrange(datetime_adt) |>
-  mutate(time_diff_sec = as.numeric(difftime(datetime_adt, lag(datetime_adt), units = "secs"))) |>
-  arrange(time_diff_sec)
 
-summary(time_int_check$time_diff_sec)
+
+### TO DO: Combine gps sources into just two columns (lat/lon)
+
+
+
+
+
+
+
+# Check time interval between successive GPS positions & flag gaps > 10 seconds
+gps_gaps <- gps |>
+  arrange(datetime_utc) |>
+  mutate(
+    time_diff_sec = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "secs")),
+    gap_flag = time_diff_sec > 10)
+
+
+library(leaflet)
+
+leaflet(data = gps_gaps) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(
+    lng = ~vessel_lon_g, lat = ~vessel_lat_g,
+    color = ~ifelse(gap_flag, "red", "grey80"),
+    radius = ~ifelse(gap_flag, 5, 2),
+    stroke = FALSE,
+    fillOpacity = 0.7,
+    popup = ~paste0(
+      "Time: ", datetime_utc,
+      "<br>Gap: ", round(time_diff_sec, 1), " sec"
+    )
+  )
+
 
 
 

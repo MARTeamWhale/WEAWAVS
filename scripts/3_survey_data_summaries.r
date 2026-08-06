@@ -1,6 +1,15 @@
-##############################################################
-# WEAWAVS Survey Summaries
-##############################################################
+################################################################################
+#
+# Script purpose: Summarize vessel survey effort and marine mammal sightings data
+# Program: DFO Maritimes - Cetacean Research and Monitoring Program (CRMP)
+# Project: Wind Energy Area Wildlife Assessment Vessel Surveys (WEAWAVS)
+# Author: Katherine Gavrilchuk
+# Affiliation: Fisheries and Oceans Canada
+# Contact: katherine.gavrilchuk@dfo-mpo.gc.ca
+# Last updated: August 5, 2026
+# R version: 4.6.1
+#
+################################################################################
 
 setwd("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING")
 #project_path <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING/"

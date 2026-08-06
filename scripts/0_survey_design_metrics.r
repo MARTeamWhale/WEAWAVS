@@ -1,24 +1,111 @@
-#############################################
-# WEAWAVeS Survey Design - additional metrics 
-#############################################
-
+################################################################################
+#
+# Script purpose: Generate summary metrics for survey transects
+# Program: DFO Maritimes - Cetacean Research and Monitoring Program (CRMP)
+# Project: Wind Energy Area Wildlife Assessment Vessel Surveys (WEAWAVS)
+# Author: Katherine Gavrilchuk
+# Affiliation: Fisheries and Oceans Canada
+# Contact: katherine.gavrilchuk@dfo-mpo.gc.ca
+# Last updated: August 5, 2026
+# R version: 4.6.1
 # NOTE: Dave Fifield (ECCC) created the survey design
+#
+################################################################################
 
-# Load packages
+#----SET WORKING DIRECTORY----
+
+setwd("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey Design/")
+
+
+#----LOAD PACKAGES----
+
 library(dplyr)
 library(geosphere)
 library(stringr)
+library(sf)
+library(leaflet)
 
-# Load survey transects
-survey <- read.csv("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey design/Scenario 2_13-day_Spring 2026_transects_coords_corrected.csv")
 
-str(survey)
+#----LOAD DATA----
 
-# Speed (km/h)
+# Planned Transects 
+transects_df <- read.csv(paste0(getwd(), "/WEAWAVS_2026-04-10_DFifield/Scenario 2 Spring 2026_transects.csv"))
+transects_shp <- st_read(file.path(paste0(getwd(), "/WEAWAVS_2026-04-10_DFifield/Planned_transects_Scenario2_Spring2026.shp")),
+                         quiet = TRUE)
+
+# Inspect data
+str(transects_df)
+str(transects_shp)
+head(transects_df)
+
+
+#----INSPECT DATA----
+
+# Produce a map of each strata to check start (x1,y1) and end (x2,y2) coordinates 
+
+# Define color mapping for complements
+complement_colors <- colorFactor(
+  palette = c("Complement 1" = "grey", "Complement 2" = "black"),
+  domain = transects_shp$complement)
+
+leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron) %>% # providers$Esri.WorldImagery 
+  addPolylines(
+    data = transects_shp,
+    color = ~complement_colors(complement),
+    weight = 2,
+    label = ~label,
+    popup = ~paste("Transect:", transect, "<br>Strata:", strata, "<br>Complement:", complement)) |> 
+  addCircleMarkers(
+    data = transects_df1, # transects_df  transects_df1
+    lng = ~x1, lat = ~y1,
+    color = "green",
+    radius = 5,
+    stroke = FALSE, fillOpacity = 0.9,
+    popup = ~paste("Start -", label)) |>
+  addCircleMarkers(
+    data = transects_df1,
+    lng = ~x2, lat = ~y2,
+    color = "red",
+    radius = 5,
+    stroke = FALSE, fillOpacity = 0.9,
+    popup = ~paste("End -", label)) |>
+  addLegend(
+    position = "bottomright",
+    colors = c("grey", "black", "green", "red"),
+    labels = c("Complement 1", "Complement 2", "Start", "End"),
+    title = "Legend")
+
+# After inspection of the start/end coords of each transect, there are some errors;
+# Corrections to be made:
+# 1) French/Middle Bank - Complement 2: The x1 and y1 coordinates and x2 and y2 coordinates need to be swapped.
+# 2) Sydney Bight - Complement 1: The x1 and y1 coordinates and x2 and y2 coordinates need to be swapped.
+
+transects_df1 <- transects_df |>
+  mutate(swap_flag = (strata == "French/Middle Bank" & complement == "Complement 2") |
+           (strata == "Sydney Bight" & complement == "Complement 1"),
+         # Temporarily hold original values
+         x1_new = if_else(swap_flag, x2, x1),
+         y1_new = if_else(swap_flag, y2, y1),
+         x2_new = if_else(swap_flag, x1, x2),
+         y2_new = if_else(swap_flag, y1, y2)) |>
+  mutate(x1 = x1_new,
+         y1 = y1_new,
+         x2 = x2_new,
+         y2 = y2_new) |>
+  select(-swap_flag, -x1_new, -y1_new, -x2_new, -y2_new)
+
+# Export corrected transects_df
+write.csv(transects_df1, paste0(getwd(), "/WEAWAVS_2026-04-10_DFifield/Scenario 2 Spring 2026_transects_coords_corrected.csv"))
+
+
+#----CALCULATE SURVEY METRICS----
+
+# Speed (km/h) or 10 kt
 speed_kmh <- 18.5
 
 # Generate additional metrics
-survey1 <- survey |>
+transects_df2 <- transects_df1 |>
   # Extract numeric portion of Transect_ID
   rename(Transect_ID = label,
          start_lon = x1,			
@@ -27,204 +114,35 @@ survey1 <- survey |>
          end_lat = y2,
          Strata = strata) |>
   mutate(Transect_ID_num = as.numeric(str_extract(Transect_ID, "\\d+")),
-         Direction = case_when(Strata =="French/Middle Bank" & complement == "Complement 2" ~  "West-to-East",
-                               Strata =="French/Middle Bank" & complement == "Complement 1" ~  "East-to-West",
-                               Strata =="Sydney Bight" & complement == "Complement 2" ~  "South-to-North",
-                               Strata =="Sydney Bight" & complement == "Complement 1" ~  "North-to-South"),  
+         Direction = case_when(Strata == "French/Middle Bank" & complement == "Complement 2" ~ "West-to-East",
+                               Strata == "French/Middle Bank" & complement == "Complement 1" ~ "East-to-West",
+                               Strata == "Sydney Bight" & complement == "Complement 2" ~ "South-to-North",
+                               Strata == "Sydney Bight" & complement == "Complement 1" ~ "North-to-South"),
          Direction_num = case_when(Direction == "West-to-East" ~ 1,
                                    Direction == "East-to-West" ~ 2,
                                    Direction == "South-to-North" ~ 3,
                                    Direction == "North-to-South" ~ 4)) |>
-  # Ensure proper ordering within each group
   arrange(Strata, Direction_num, Transect_ID_num) |>
   group_by(Strata, Direction_num) |>
-  # Transect distance (km)
-  mutate(Transect_km = distHaversine(
-         cbind(start_lon, start_lat),
-         cbind(end_lon, end_lat)) / 1000,
-        # Time per transect (hours)
-         Transect_time_h = Transect_km / speed_kmh,
-        # Inter-transect distance (km)
-        # Distance from END of current transect to START of next
-        Inter_transect_km = distHaversine(
-        cbind(end_lon, end_lat),
-        cbind(lead(start_lon), lead(start_lat))) / 1000,
-    # Total km per "complement" (Strata + Direction)
+  mutate(
+    Transect_km = distHaversine(cbind(start_lon, start_lat), cbind(end_lon, end_lat)) / 1000,
+    Transect_time_h = Transect_km / speed_kmh,
+    Inter_transect_km = distHaversine(cbind(end_lon, end_lat), cbind(lead(start_lon), lead(start_lat))) / 1000,
+    
+    # Cumulative distance (km) per transect + transit to next transect
+    Cum_dist_km = cumsum(Transect_km) + cumsum(coalesce(Inter_transect_km, 0)),
+    # Cumulative time (h) per transect + transit to next transect
+    Cum_time_h = cumsum(Transect_time_h) + cumsum(coalesce(Inter_transect_km, 0) / speed_kmh),
+    
     Total_compl_km = sum(Transect_km, na.rm = TRUE),
-    # Total survey distance including transit
     Total_with_transit_km = sum(Transect_km, na.rm = TRUE) +
       sum(Inter_transect_km, na.rm = TRUE)) |>
-  # Round values for reporting
   mutate(across(ends_with("km"), ~ round(.x, 1)),
-         Transect_time_h = round(Transect_time_h, 1)) |>
+         across(ends_with("_h"), ~ round(.x, 1))) |>
   ungroup() |>
   select(-c(Direction_num, transect))
 
 # Export 
-write.csv(survey1,"C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey design/Scenario2_13-day_Summer2026_transects_with_metrics.csv",
-  row.names = FALSE)
+write.csv(transects_df2, paste0(getwd(), "/Scenario2_13-day_transects_with_metrics.csv"),  row.names = FALSE)
 
-str(survey1)
-
-
-
-
-
-
-
-#Prepare ordered path
-#This converts your data into a single sequential route.
-
-library(dplyr)
-library(lubridate)
-
-speed_kmh <- 18.5
-day_start <- 7
-day_end <- 19
-
-start_time <- ymd_hms("2026-06-30 07:00:00")
-
-survey_path <- survey1 %>%
-  arrange(Strata, Transect_ID)
-
-
-#STEP 2 — Build movement segments
-# turn each transect into:
-# survey segment
-#inter-transect segment
-
-build_segments <- function(df) {
-  
-  segments <- list()
-  
-  for (i in 1:nrow(df)) {
-    
-    segments[[length(segments) + 1]] <- list(
-      type = "survey",
-      id = df$Transect_ID[i],
-      km = df$Transect_km[i]
-    )
-    
-    if (i < nrow(df)) {
-      segments[[length(segments) + 1]] <- list(
-        type = "transit",
-        id = paste0(df$Transect_ID[i], "->", df$Transect_ID[i+1]),
-        km = df$Inter_transect_km[i]
-      )
-    }
-  }
-  
-  segments
-}
-
-# STEP 3 — Daylight-aware time engine
-advance_daylight <- function(time, hours) {
-  
-  while (hours > 0) {
-    
-    h <- hour(time)
-    
-    # before day starts → jump to 07:00
-    if (h < day_start) {
-      time <- update(time, hour = day_start, minute = 0, second = 0)
-      next
-    }
-    
-    # after day ends → jump to next day 07:00
-    if (h >= day_end) {
-      time <- time + days(1)
-      time <- update(time, hour = day_start, minute = 0, second = 0)
-      next
-    }
-    
-    remaining <- day_end - h
-    step <- min(hours, remaining)
-    
-    time <- time + hours(step)
-    hours <- hours - step
-  }
-  
-  time
-}
-
-
-# STEP 4 — Run full simulation
-
-#This is the key object that generates everything.
-
-run_simulation <- function(segments, start_time) {
-  
-  time <- start_time
-  
-  results <- data.frame(
-    segment = character(),
-    type = character(),
-    start = as.POSIXct(character()),
-    midpoint = as.POSIXct(character()),
-    end = as.POSIXct(character())
-  )
-  
-  for (seg in segments) {
-    
-    duration_h <- seg$km / speed_kmh
-    duration_time <- dhours(duration_h)
-    
-    start_seg <- time
-    
-    # overnight exception ONLY for FMB41->SB01
-    if (grepl("FMB41->SB01", seg$id)) {
-      
-      time <- time + duration_time
-      
-    } else {
-      
-      time <- advance_daylight(time, duration_h)
-    }
-    
-    end_seg <- time
-    mid_seg <- start_seg + (end_seg - start_seg) / 2
-    
-    results <- rbind(results, data.frame(
-      segment = seg$id,
-      type = seg$type,
-      start = start_seg,
-      midpoint = mid_seg,
-      end = end_seg
-    ))
-  }
-  
-  results
-}
-
-#STEP 5 — Build per-transect table
-extract_transect_table <- function(sim) {
-  
-  sim %>%
-    filter(type == "survey") %>%
-    mutate(Transect_ID = segment) %>%
-    select(Transect_ID, start, midpoint, end)
-}
-
-#STEP 6 — Build daily summary table
-# This is the part that fixes your earlier inconsistency.
-
-make_daily_summary <- function(sim) {
-  
-  sim %>%
-    mutate(date = as.Date(start)) %>%
-    group_by(date) %>%
-    summarise(
-      transects = paste(unique(segment[type == "survey"]), collapse = ", "),
-      .groups = "drop"
-    )
-}
-
-# STEP 7 — Run everything
-segments <- build_segments(survey_path)
-
-sim <- run_simulation(segments, start_time)
-
-transect_table <- extract_transect_table(sim)
-
-daily_table <- make_daily_summary(sim)
       
