@@ -6,7 +6,7 @@
 # Author: Katherine Gavrilchuk
 # Affiliation: Fisheries and Oceans Canada
 # Contact: katherine.gavrilchuk@dfo-mpo.gc.ca
-# Last updated: August 5, 2026
+# Last updated: August 19, 2026
 # R version: 4.6.1
 #
 ################################################################################
@@ -16,14 +16,23 @@
 
 setwd("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/")
 
-# Spring
-#path2data <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING"
-# Summer
-path2data <- "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Summer2026_2026-07-17_FINAL_WORKING"
+# Specify dataset
+dataset = "Spring2026" # Spring2026, Summer2026, Fall2026, Winter2027
+
+# Define paths to each dataset
+data_paths <- c(
+  Spring2026 = "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Spring2026_2026-05-12_FINAL_WORKING",
+  Summer2026 = "C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Data_Directory_Summer2026_2026-07-17_FINAL_WORKING"
+  # Fall2026   = "...",
+  # Winter2027 = "..."
+)
+
+path2data <- data_paths[[dataset]]
 
 
 #----LOAD PACKAGES----
 
+library(data.table)
 library(tidyverse)
 library(lubridate)
 library(sf)
@@ -32,7 +41,78 @@ library(geosphere)
 library(rmarkdown)
 library(leaflet)
 library(stringr)
-library(data.table)
+
+# > # Check for other function-name collisions between the two packages
+#intersect(ls("package:data.table"), ls("package:dplyr"))
+# "between" "first"   "last" 
+
+
+#----LOAD FUNCTIONS----
+
+flag_and_replace_suspicious_gps <- function(gps_df, xmin, xmax, ymin, ymax, verbose = TRUE) {
+  dt <- data.table::copy(as.data.table(gps_df))
+  
+  dt[, suspicious_gps :=
+       vessel_lon < xmin |
+       vessel_lon > xmax |
+       vessel_lat < ymin |
+       vessel_lat > ymax |
+       is.na(vessel_lat) |
+       is.na(vessel_lon)]
+  
+  # Save the original (pre-replacement) suspicious rows for review
+  suspicious_gps_check <- dt[suspicious_gps == TRUE]
+  
+  # Reference table of valid GPS fixes only
+  good_dt <- dt[suspicious_gps == FALSE, .(datetime_adt, vessel_lat, vessel_lon)]
+  setkey(good_dt, datetime_adt)
+  setkey(dt, datetime_adt)
+  
+  # Rolling join (nearest time match): replace suspicious lat/lon with the nearest valid
+  # fix, and also record that fix's own timestamp (x.datetime_adt) so we can see how
+  # far away in time the replacement actually came from
+  dt[suspicious_gps == TRUE,
+     c("vessel_lat", "vessel_lon", "replacement_datetime_adt") :=
+       good_dt[.SD, on = "datetime_adt", roll = "nearest",
+               .(vessel_lat, vessel_lon, replacement_datetime_adt = x.datetime_adt)] ]
+  
+  cleaned <- as_tibble(dt) |> select(-suspicious_gps, -replacement_datetime_adt)
+  
+  suspicious_gps_check[, reason := fifelse(
+    is.na(vessel_lat) | is.na(vessel_lon), "missing", "out_of_bounds")]
+  
+  summary_by_source <- suspicious_gps_check[, .N, by = .(gps_source, reason)]
+  
+  # Row-for-row comparison of original vs. replacement values. Using bind_cols-style
+  # alignment (not a join on datetime_adt) since dt[suspicious_gps == TRUE] preserves
+  # the same row order before and after the rolling-join update -- this also avoids a
+  # potential many-to-many mismatch if two suspicious rows happened to share a timestamp
+  replaced_rows <- dt[suspicious_gps == TRUE]
+  
+  replacement_check <- tibble(
+    gps_source        = suspicious_gps_check$gps_source,
+    reason            = suspicious_gps_check$reason,
+    orig_datetime_adt = suspicious_gps_check$datetime_adt,
+    orig_lat          = suspicious_gps_check$vessel_lat,
+    orig_lon          = suspicious_gps_check$vessel_lon,
+    new_datetime_adt  = replaced_rows$replacement_datetime_adt,
+    new_lat           = replaced_rows$vessel_lat,
+    new_lon           = replaced_rows$vessel_lon
+  ) |>
+    mutate(time_diff_min = round(as.numeric(difftime(new_datetime_adt, orig_datetime_adt, units = "mins")), 2))
+  
+  if (verbose) {
+    message(nrow(suspicious_gps_check), " suspicious GPS row(s) flagged and replaced.")
+    print(summary_by_source)
+  }
+  
+  list(
+    cleaned = cleaned,
+    suspicious_check = suspicious_gps_check,
+    summary_by_source = summary_by_source,
+    replacement_check = replacement_check
+  )
+}
 
 
 #----DEFINE STUDY AREA----
@@ -45,10 +125,7 @@ xmax <- study.bbox[3]
 ymax <- study.bbox[4]
 
 
-#----LOAD DATA----
-
-
-#----Planned Transects----
+#----LOAD PLANNED TRANSECTS----
 
 # Planned transects (shapefile)
 transects_shp <- st_read(file.path(paste0(getwd(), "/Survey design/WEAWAVS_2026-04-10_DFifield/Planned_transects_Scenario2_Spring2026.shp")), quiet = TRUE)
@@ -56,10 +133,14 @@ transects_shp <- st_read(file.path(paste0(getwd(), "/Survey design/WEAWAVS_2026-
 # Planned transects with metrics (csv)
 transects_df <- read.csv(paste0(getwd(),"/Survey design/Scenario2_13-day_transects_with_metrics.csv"))
 
+# Study area polygons (shapefile)
+studyarea_shp <- st_read(file.path(paste0(getwd(), "/Survey design/WEAWAVS_2026-04-10_DFifield/Study_area_buf_prelim.shp")), quiet = TRUE)
 
-#----GPS----
 
-# Mysticetus GPS files
+
+#----LOAD GPS----
+
+# (1) Mysticetus GPS (first GPS source; daytime only - when the computer was on)
 mysti_files <- list.files(file.path(paste0(path2data, "/Mysti_GPS")), pattern = "csv$", full.names = TRUE)
 
 # Combine Mysticetus GPS files
@@ -73,7 +154,20 @@ gps_mysti <- map_df(mysti_files, read_csv, show_col_types = FALSE) |>
   select(datetime_utc, vessel_lat_m, vessel_lon_m, sog_kt, cog_t) |>
   arrange(datetime_utc)
 
-# Garmin GPS files
+# (2) Garmin GPS (second GPS source; daytime and nighttime)
+garmin_files <- list.files(file.path(paste0(path2data, "/Garmin_GPS")), pattern = "\\.gpx$", full.names = TRUE)
+
+# Check structure of gpx file
+# test_file <- garmin_files[1]
+# raw <- st_read(test_file, layer = "track_points", quiet = TRUE)
+# 
+# # Inspect the raw 'time' column exactly as returned by st_read, before any transformation
+# str(raw$time)
+# attr(raw$time, "tzone")
+# head(raw$time, 5)
+# names(raw)
+
+# (2) Garmin GPS (second GPS source; daytime and nighttime)
 garmin_files <- list.files(file.path(paste0(path2data, "/Garmin_GPS")), pattern = "\\.gpx$", full.names = TRUE)
 
 # Combine Garmin GPS files
@@ -84,80 +178,65 @@ gps_garmin <- map_df(garmin_files, function(f){
   coords <- st_coordinates(df)
   
   df |>
-    mutate(datetime_utc = force_tz(time, "UTC"),
+    mutate(
+      datetime_utc = with_tz(force_tz(time, "America/Halifax"), "UTC"),
       vessel_lon_g = coords[,1],
       vessel_lat_g = coords[,2]) |>
     st_drop_geometry() |>
-    select(datetime_utc, vessel_lat_g, vessel_lon_g) |>
-    arrange(datetime_utc)
+    select(datetime_utc, vessel_lat_g, vessel_lon_g, track_fid, track_seg_id) |>
+    arrange(datetime_utc) |>
+    # Calculate speed over ground from consecutive fixes, within each track segment
+    # so a gap between segments/files doesn't get treated as a single (bogus) speed
+    group_by(track_fid, track_seg_id) |>
+    mutate(
+      dist_m = geosphere::distHaversine(
+        cbind(vessel_lon_g, vessel_lat_g),
+        cbind(lag(vessel_lon_g), lag(vessel_lat_g))),
+      dt_sec = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "secs")),
+      sog_kt = if_else(dt_sec > 0, (dist_m / dt_sec) * 1.943844, NA_real_)  # m/s -> knots
+    ) |>
+    ungroup() |>
+    select(datetime_utc, vessel_lat_g, vessel_lon_g, sog_kt)
   
 })
 
-# Export Garmin track only
-#write.csv(gps_garmin, file = paste0(path2data, "/Garmin_GPS/all_garmin_tracks.csv"))
 
-# Check time interval between successive GPS positions
-time_int_check <- gps_garmin |>
-  arrange(datetime_utc) |>
-  mutate(time_diff_sec = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "secs"))) |>
-  arrange(time_diff_sec)
+# (3) Ship's NAV GPS (third GPS source; daytime and nighttime - to fill in outstanding GPS gaps, if needed)
+# (provided by Teleost crew at end of survey)
+teleost_gps <- read.csv(paste0(path2data,"/Teleost_NAV_GPS/Teleost_VoyageLog20260512121847.csv"))
 
-summary(time_int_check$time_diff_sec)
+# Helper function: convert lat/lon DMM strings to decimal degrees
+dmm_to_decimal <- function(x) {
+  deg  <- as.numeric(str_extract(x, "^[0-9]+"))
+  min  <- as.numeric(str_extract(x, "(?<=\\s)[0-9]+\\.[0-9]+(?=\\s)"))
+  hemi <- str_extract(x, "[NSEW]$")
+  dd <- deg + min / 60
+  dd[hemi %in% c("S", "W")] <- -dd[hemi %in% c("S", "W")]
+  dd
+}
+
+teleost_gps2 <- teleost_gps |>
+  mutate(
+    datetime_utc = ymd_hms(paste(Date, Time), tz = "UTC"),
+    datetime_adt = with_tz(datetime_utc, tzone = "America/Halifax"),
+    vessel_lat   = dmm_to_decimal(LAT),
+    vessel_lon   = dmm_to_decimal(LON),
+    sog_kt       = SOG.kn,
+    cog_degT    = COG.deg.T,
+    hdg_degT = HDG.deg.T,
+    depth.m = Depth.m) |>
+  select(datetime_utc, datetime_adt, vessel_lat, vessel_lon, 
+         sog_kt, cog_degT, hdg_degT, depth.m) |>
+  arrange(datetime_utc)
+
+write.csv(teleost_gps2, paste0(path2data, "/Data_summaries/data_combined_cleaned/Teleost_NAV_GPS_", dataset, ".csv"), row.names = FALSE)
+
+# NOTE for Spring 2026: The Teleost's NAV GPS was also collected using a TeamWhale laptop with the Open GPN software, connected to NAV feed in Bridge; the program or laptop often crashed, so its a patchy source of GPS data and is redundant with the previous GPS source, so not needed.
 
 
-# Import ship's NAV GPS (provided by Teleost crew at end of survey)
-teleost_gps <- read.csv(paste0(path2data(),"/Teleost_NAV_GPS/Teleost_VoyageLog20260512121847.csv"))
+#----COMBINE GPS DATA----
 
-# Check time interval between successive GPS positions
-teleost_gps1 <- teleost_gps |>
-  
-  ###################################################################
-  ###### NEED TO FIGURE OUT WHAT TIME ZONE THE SHIP'S TRACK IS IN! ##
-  ###################################################################
-  
-    # Create datetime column
-  mutate(datetime_utc = ymd_hms(paste(Date, Time), tz = "UTC")) |>
-  # Ensure rows are ordered by time
-  arrange(datetime_utc) |>
-  # Calculate successive time differences
-  mutate(time_diff_sec = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "secs"))) 
-
-check <- teleost_gps1 |>
-  arrange(time_diff_sec)
-
-
-# Import ship's NAV GPS (collected via OpenCPN run from a TeamWhale laptop)
-
-# Teleost's NAV OpenCPN gpx files
-teleost_files <- list.files(file.path(paste0(path2data(), "/Teleost_NAV_GPS/OpenCPN")),
-                           pattern = "\\.gpx$", full.names = TRUE)
-
-# Combine Teleost GPS files
-
-# Read and combine
-gps_teleost <- map_df(teleost_files, function(f) {
-  
-  df <- st_read(f, layer = "track_points",quiet = TRUE)
-  
-  coords <- st_coordinates(df)
-  
-  df |>
-    st_drop_geometry() |>
-    bind_cols(as.data.frame(coords)) |>
-    
-  ###################################################################
-  ###### NEED TO FIGURE OUT WHAT TIME ZONE THE SHIP'S TRACK IS IN! ##
-  ###################################################################
-  
-    mutate(datetime_utc = force_tz(time, "UTC"),
-      vessel_lat_t = Y,
-      vessel_lon_t = X) |>
-    select(datetime_utc, vessel_lat_t,vessel_lon_t) |>
-    arrange(datetime_utc)
-  
-})
-    
-# Combine Mysticetus and Garmin GPS
+# Start with Mysticetus and Garmin sources; if outstanding large (to be defined) GPS gaps remain, integrate the ship's NAV GPS source.
 gps <- bind_rows(gps_mysti, gps_garmin) |>
   arrange(datetime_utc) |>
   # Convert to Atlantic Daylight time
@@ -165,52 +244,177 @@ gps <- bind_rows(gps_mysti, gps_garmin) |>
   # Relocate to first columns
   relocate(c(datetime_utc, datetime_adt)) |>
   # There are some duplicates in the Mysticetus GPS rows
-  distinct() # n = 6795 duplicate rows removed; sometimes duplicates occurred if ship was stationary for longer periods
+  distinct()  |> # n = 6795 duplicate rows removed; sometimes duplicates occurred if ship was stationary for longer periods
+  # Combine gps sources into just two columns (lat/lon)
+  mutate(vessel_lat = if_else(!is.na(vessel_lat_m), vessel_lat_m, vessel_lat_g),
+         vessel_lon = if_else(!is.na(vessel_lat_m), vessel_lon_m, vessel_lon_g),
+         gps_source = case_when(!is.na(vessel_lat_m) & !is.na(vessel_lon_m) ~ "mysticetus",
+                                !is.na(vessel_lat_g) & !is.na(vessel_lon_g) ~ "garmin",
+                                TRUE ~ NA_character_)) |>
+  arrange(datetime_utc) |>
+  select(datetime_utc, datetime_adt, vessel_lat, vessel_lon, sog_kt, cog_t, gps_source)
 
 
+#----GPS DATA: ERROR-CHECKING----
 
-### TO DO: Combine gps sources into just two columns (lat/lon)
-
-
-
-
-
-
-
-# Check time interval between successive GPS positions & flag gaps > 10 seconds
+# (1) Data gaps
+# Check time interval between successive GPS positions & flag gaps > 1 minute
 gps_gaps <- gps |>
   arrange(datetime_utc) |>
   mutate(
     time_diff_sec = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "secs")),
-    gap_flag = time_diff_sec > 10)
+    gap_flag = time_diff_sec > 60)
 
+table(gps_gaps$gap_flag)
+summary(gps_gaps$time_diff_sec)
 
-library(leaflet)
-
-leaflet(data = gps_gaps) %>%
-  addProviderTiles(providers$CartoDB.Positron) %>%
+# Visualize gaps in the GPS track
+leaflet(data = gps_gaps) |>
+  addProviderTiles(providers$CartoDB.Positron) |>
   addCircleMarkers(
-    lng = ~vessel_lon_g, lat = ~vessel_lat_g,
+    lng = ~vessel_lon, lat = ~vessel_lat,
     color = ~ifelse(gap_flag, "red", "grey80"),
     radius = ~ifelse(gap_flag, 5, 2),
     stroke = FALSE,
     fillOpacity = 0.7,
     popup = ~paste0(
       "Time: ", datetime_utc,
-      "<br>Gap: ", round(time_diff_sec, 1), " sec"
-    )
-  )
+      "<br>Gap: ", round(time_diff_sec, 1), " sec"))
 
 
+# (2) Erroneous GPS locations (uses function at the top of script)
+result_main <- flag_and_replace_suspicious_gps(gps, xmin, xmax, ymin, ymax)
+
+gps1 <- result_main$cleaned
+suspicious_gps_check <- result_main$suspicious_check
+replacement_check <- result_main$replacement_check
+
+# Export combined Mysticetus & Garmin GPS track
+write.csv(gps1, paste0(path2data, "/Data_summaries/data_combined_cleaned/Mysti-Garmin_GPS_", dataset, ".csv"), row.names = FALSE)
 
 
+# Inspect GPS tracks 
 
-#----EFFORT----
+# (1) GPS Source = Mysticetus (day-time tracks only) - Tracks split by date
+mysticetus_pts <- gps1 |>
+  filter(gps_source == "mysticetus", !is.na(vessel_lat), !is.na(vessel_lon)) |>
+  arrange(datetime_utc) |>
+  mutate(track_date = as.Date(datetime_adt)) |>   # split by ADT date; switch to datetime_utc if preferred
+  st_as_sf(coords = c("vessel_lon", "vessel_lat"), crs = 4326, remove = FALSE)
+
+mysticetus_lines <- mysticetus_pts |>
+  group_by(track_date) |>
+  summarise(do_union = FALSE) |>   # keep chronological order within each date
+  st_cast("LINESTRING")
+
+# Split into a named list -- one sf object per date, keyed by date label
+mysticetus_by_date <- split(mysticetus_lines, mysticetus_lines$track_date)
+date_labels <- names(mysticetus_by_date)   # character labels, e.g. "2026-04-23"
+
+# Map: one polyline per date, each its own toggleable layer (all same color)
+m_mysticetus <- leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron)
+
+for (lbl in date_labels) {
+  m_mysticetus <- m_mysticetus |>
+    addPolylines(
+      data = mysticetus_by_date[[lbl]],
+      color = "dodgerblue",   # fixed color for all tracks
+      weight = 2,
+      opacity = 0.8,
+      group = lbl)
+}
+
+m_mysticetus <- m_mysticetus |>
+  addLayersControl(
+    overlayGroups = date_labels,
+    options = layersControlOptions(collapsed = FALSE)) |>
+  hideGroup(date_labels[-1]) |>   # explicitly hide all but the first date by default
+  addLegend("bottomright", colors = "dodgerblue", labels = "Mysticetus", title = "GPS Source")
+
+m_mysticetus
+
+
+# (2) GPS Source = Garmin (day-time tracks only) - Tracks split by date
+
+garmin_pts <- gps1 |>
+  filter(gps_source == "garmin", !is.na(vessel_lat), !is.na(vessel_lon)) |>
+  arrange(datetime_utc) |>
+  mutate(track_date = as.Date(datetime_adt)) |>   # split by ADT date; switch to datetime_utc if preferred
+  st_as_sf(coords = c("vessel_lon", "vessel_lat"), crs = 4326, remove = FALSE)
+
+garmin_lines <- garmin_pts |>
+  group_by(track_date) |>
+  summarise(do_union = FALSE) |>   # keep chronological order within each date
+  st_cast("LINESTRING")
+
+# Split into a named list -- one sf object per date, keyed by date label
+garmin_by_date <- split(garmin_lines, garmin_lines$track_date)
+date_labels_garmin <- names(garmin_by_date)   # character labels, e.g. "2026-04-23"
+
+# Map: one polyline per date, each its own toggleable layer (all same color)
+m_garmin <- leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron)
+
+for (lbl in date_labels_garmin) {
+  m_garmin <- m_garmin |>
+    addPolylines(
+      data = garmin_by_date[[lbl]],
+      color = "darkred",   # fixed color for all tracks
+      weight = 2,
+      opacity = 0.8,
+      group = lbl)
+}
+
+m_garmin <- m_garmin |>
+  addLayersControl(
+    overlayGroups = date_labels_garmin,
+    options = layersControlOptions(collapsed = FALSE)) |>
+  hideGroup(date_labels_garmin[-1]) |>   # explicitly hide all but the first date by default
+  addLegend("bottomright", colors = "darkred", labels = "Garmin", title = "GPS Source")
+
+m_garmin
+
+
+# (3) All tracks/dates combined (per GPS source)
+
+# Build a line + point set for each source separately
+build_source_data <- function(df, source_name) {
+  pts <- df |>
+    filter(gps_source == source_name, !is.na(vessel_lat), !is.na(vessel_lon)) |>
+    arrange(datetime_utc) |>
+    st_as_sf(coords = c("vessel_lon", "vessel_lat"), crs = 4326, remove = FALSE)
+  
+  line <- pts |>
+    summarise(do_union = FALSE) |>
+    st_cast("LINESTRING")
+  
+  list(points = pts, line = line)
+}
+
+mysticetus_data <- build_source_data(gps1, "mysticetus")
+garmin_data     <- build_source_data(gps1, "garmin")
+
+# Mysticetus map 
+leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  addPolylines(data = mysticetus_data$line, color = "dodgerblue", weight = 2, opacity = 0.8) |>
+  addLegend("bottomright", colors = "dodgerblue", labels = "Mysticetus", title = "GPS Source")
+
+# Garmin map
+leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  addPolylines(data = garmin_data$line, color = "darkred", weight = 2, opacity = 0.8) |>
+  addLegend("bottomright", colors = "darkred", labels = "Garmin", title = "GPS Source")
+
+
+#----LOAD EFFORT----
 
 # List all EffortEnv csv files
-effort_files <- list.files(file.path(paste0(here(), "/Mysti_data")),
+effort_files <- list.files(file.path(paste0(path2data, "/Mysti_data")),
                            pattern = "EffortEnv\\.csv$", 
                            recursive = TRUE, full.names = TRUE)
+
 
 # Import & combine all EffortEnv files
 effort <- effort_files |>
@@ -218,9 +422,10 @@ effort <- effort_files |>
                    col_types = cols(.default = col_character()),
                    show_col_types = FALSE)) 
 
-# Data wrangling
 
-# Datetime checks
+#----EFFORT DATA: ERROR-CHECKING----
+
+# (1) Datetime checks
 effort1 <- effort |>
   arrange(`Datetime_UTC_locked (UTC)`) |>
   # Check for any missing values (NA or blank) in the Datetime_UTC (UTC) column, flag those
@@ -265,10 +470,11 @@ effort3 <- effort2 |>
          vessel_lat_e = lat_deg + lat_min / 60,
          vessel_lon_e = lon_deg + lon_min / 60,
          vessel_lat_e = if_else(lat_dir == "S", -vessel_lat_e, vessel_lat_e),
-         vessel_lon_e = if_else(lon_dir == "W", -vessel_lon_e, vessel_lon_e)) |>
-  # Add start and end daily effort times, where:
-  # - start of effort = first datetime_adt of the day where Effort %in% c("Bridge-On", "On", "Transit-On")
-  # - end of day =  the last datetime_adt of the day
+         vessel_lon_e = if_else(lon_dir == "W", -vessel_lon_e, vessel_lon_e),
+         gps_source = "effortenv") |>
+  # Start and end of actual (or 'realized) daily effort times, where:
+  # - start of daily effort = first datetime_adt of the day where Effort %in% c("Bridge-On", "On", "Transit-On")
+  # - end of daily effort =  the last datetime_adt of the day
   group_by(date_adt) |>
   mutate(start.effort_adt = {
       idx <- Effort %in% c("Bridge-On", "On", "Transit-On")
@@ -282,7 +488,7 @@ effort3 <- effort2 |>
   ungroup() |>
   # Relocate new lat/lon columns to after GPS_pos and verify they are correct
   relocate(c(vessel_lat_e, vessel_lon_e), .after = GPS_pos) |>
-  # Remove rows marked to be deleted (can also check them first before deleting)
+  # Remove rows marked to be deleted (check them first before deleting)
   filter(Delete_row != "True") |>
   # Remove unnecessary columns
   select(-c(datetime_missing, datetime_duplicates, lat_deg, lat_min, lon_deg, lon_min, 
@@ -291,159 +497,282 @@ effort3 <- effort2 |>
   relocate(c(start.effort_adt, end.effort_adt), .after = `Datetime_UTC (UTC)`)
 
 
-# ---------------------------
-# JOIN GPS + EFFORT
-# ---------------------------
+# Checks:
 
-# Combine GPS + Effort
-gps_effort <- gps |>
+# Transect_ID check against the reference list in transects_df
+effort3 <- effort3 |>
+  mutate(
+    Transect_ID_orig = Transect_ID,  # keep original for reference
+    Transect_ID = na_if(Transect_ID, "Na"),
+    Transect_ID_flag = case_when(
+      is.na(Transect_ID) ~ NA_character_,
+      Transect_ID %in% transects_df$Transect_ID ~ "OK",
+      TRUE ~ "REVIEW"))  # doesn't match any known transect ID
+
+# Show the flagged row(s) with enough context to identify the correct Transect_ID
+effort3 |>
+  filter(Transect_ID_flag == "REVIEW") |>
+  select(datetime_adt, Transect_ID_orig, Vessel, Effort)
+
+# Suggest the closest valid Transect_ID using string distance, in case it's a typo
+review_value <- effort3 |>
+  filter(Transect_ID_flag == "REVIEW") |>
+  pull(Transect_ID_orig) |>
+  unique()
+
+review_value
+
+stringdist::stringdist(review_value, transects_df$Transect_ID) |>
+  setNames(transects_df$Transect_ID) |>
+  sort() |>
+  head(5)
+
+# Known corrections: map incorrect Transect_ID values to their correct counterpart
+transect_id_corrections <- c(
+  "FBM37" = "FMB37"
+  # add more corrections here as they're identified, e.g.:
+  # "WRONG_ID" = "CORRECT_ID"
+)
+
+# Re-check to verify any typos were resolved
+effort3 <- effort3 |>
+  mutate(
+    Transect_ID = if_else(Transect_ID %in% names(transect_id_corrections),
+                          transect_id_corrections[Transect_ID],
+                          Transect_ID),
+    Transect_ID_flag = case_when(
+      is.na(Transect_ID) ~ NA_character_,
+      Transect_ID %in% transects_df$Transect_ID ~ "OK",
+      TRUE ~ "REVIEW"))
+
+table(effort3$Transect_ID_flag)
+
+# Inspect unique transect_IDs
+unique(sort(effort3$Transect_ID))
+
+
+
+
+
+
+
+
+
+
+# To include somewhere:
+
+# Verify that vessel speed is  >= 5kt while "On" or "Bridge-On" or "Transit-On" effort
+
+
+
+
+
+
+#----JOIN GPS + EFFORT----
+
+# Join gps1 to effort3
+gps_effort <- gps1 |>
   full_join(effort3, by = "datetime_utc") |>
   arrange(datetime_utc) |>
-  # Coalesce GPS coordinates while preserving coordinate pairs
-  mutate(vessel_lat = if_else(!is.na(vessel_lat_m) & !is.na(vessel_lon_m),
-                           vessel_lat_m, vessel_lat_g),
-         vessel_lon = if_else(!is.na(vessel_lat_m) & !is.na(vessel_lon_m),
-                           vessel_lon_m, vessel_lon_g)) |>
-  relocate(c(vessel_lat, vessel_lon), .after = vessel_lon_g) |>
-  # NOTE: After the step above, verify that the coalesce operation worked properly
-  # Now, coalesce the lat/lon from Effort/Env with the vessel_lat/vessel_lon
-  mutate(vessel_lat = coalesce(vessel_lat, vessel_lat_e),
-         vessel_lon = coalesce(vessel_lon, vessel_lon_e),
-         datetime_adt = coalesce(datetime_adt.x, datetime_adt.y),
-         Vessel = replace_na(Vessel, "Teleost"),
-         # Create date variable based on Atlantic Daylight Time zone
-         date_adt = as_date(datetime_adt),
-         # Create "strata" column based on dates within each strata (or not in strata)
-         Strata = case_when(date_adt %in% as.Date(c("2026-04-23", "2026-05-01", "2026-05-04")) ~ "Not.in.strata",
-                            date_adt >= "2026-05-06" & date_adt <= "2026-05-10" ~ "SB",
-                            TRUE ~ "FMB"),
-         # Correct a typo in Transect ID
-         Transect_ID = case_when(Transect_ID == "FBM37" ~ "FMB37",
-                                 TRUE ~ Transect_ID),
-         Transect_ID = na_if(Transect_ID, "Na")) |>
+  mutate(row_id = row_number()) |>   # stable key for re-joining spatial results later
+  mutate(
+    # Coalesce vessel_lat/vessel_lon as matched pairs, not independently --
+    # if EITHER coordinate is missing from the gps columns, fall back to the
+    # effort-side pair entirely, so we never mix a lat from one source with a lon from the other
+    use_effort_pos = is.na(vessel_lat) | is.na(vessel_lon),
+    vessel_lat = if_else(use_effort_pos, vessel_lat_e, vessel_lat),
+    vessel_lon = if_else(use_effort_pos, vessel_lon_e, vessel_lon),
+    # Coalesce datetime_adt from each df
+    datetime_adt = coalesce(datetime_adt.x, datetime_adt.y),
+    # Coalesce gps_source from each df
+    gps_source = coalesce(gps_source.x, gps_source.y),
+    # Create date variable based on Atlantic Daylight Time zone
+    date_adt = as_date(datetime_adt)) |>
+  select(-c(use_effort_pos, datetime_adt.x, datetime_adt.y,
+            gps_source.x, gps_source.y))
+
+# Checks: 
+
+# (1) Erroneous GPS:
+# Now that gps and effort dataframes have been joined, re-check whether there are any erroneous GPS positions
+result_effort <- flag_and_replace_suspicious_gps(gps_effort, xmin, xmax, ymin, ymax)
+gps_effort <- result_effort$cleaned
+suspicious_gps_check_effort <- result_effort$suspicious_check
+replacement_check_effort <- result_effort$replacement_check
+#...Inspect to ensure the replacement of GPS positions makes sense!
+
+# (2) Missing coordinates:
+# Confirm there are no rows with missing coordinates before spatial join
+n_missing_coords <- gps_effort |>
+  filter(is.na(vessel_lat) | is.na(vessel_lon)) |>
+  nrow()
+
+if (n_missing_coords > 0) {
+  warning(n_missing_coords, " row(s) have missing vessel_lat/vessel_lon after coalescing -- these will be excluded from the spatial join and assigned strata = 'NONE'.")
+} else {
+  message("No rows with missing coordinates.")
+}
+
+# Alternatively: inspect any missing-coordinates rows directly
+gps_effort |>
+  filter(is.na(vessel_lat) | is.na(vessel_lon))
+
+
+# Assign 'strata' (FMB, SB, or NONE) based on whether a lat/lon falls within studyarea_shp$WEA
+
+# Re-project the studyarea_shp to match that of the gps_effort lat/lon (EPSG: 4326 or the WGS 84 (World Geodetic System 1984))
+studyarea_shp <- st_transform(studyarea_shp, crs = 4326)
+
+# Check that coordinates make sense
+st_bbox(studyarea_shp)
+#      xmin      ymin      xmax      ymax 
+# -62.06301  44.27166 -59.38481  46.82832 
+
+strata_lookup <- gps_effort |>
+  st_as_sf(coords = c("vessel_lon", "vessel_lat"), crs = 4326, remove = FALSE) |>
+  st_join(studyarea_shp |> select(WEA), join = st_within) |>
+  st_drop_geometry() |>
+  transmute(row_id, strata = case_when(WEA == "French/Middle Bank" ~ "FMB",
+                                       WEA == "Sydney Bight"       ~ "SB",
+                                       TRUE ~ "NONE"))
+
+# Join the strata_lookup to the gps_effort
+gps_effort <- gps_effort |>
+  left_join(strata_lookup, by = "row_id") |>
+  select(-row_id)
+
+# Quick visualization check: Did the strata categories get properly defined?
+
+# Map GPS points color-coded by strata
+strata_pal <- colorFactor(
+  palette = c("firebrick", "darkorange", "gray70"),
+  levels = c("FMB", "SB", "NONE"))
+
+leaflet(gps_effort) |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  addPolygons(
+    data = studyarea_shp,
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.05,
+    label = ~WEA) |>
+  addCircleMarkers(
+    lng = ~vessel_lon,
+    lat = ~vessel_lat,
+    color = ~strata_pal(strata),
+    radius = 2,
+    stroke = FALSE,
+    fillOpacity = 0.6) |>
+  addLegend("bottomright", pal = strata_pal, values = ~strata, title = "Strata")
+
+
+# Checking specific times when strata wasn't assigned the same depending on GPS source
+# # 1. Zoom in on the exact window from your screenshot and compare the two sources directly
+# compare_window <- gps_effort |>
+#   filter(datetime_adt >= as_datetime("2026-05-02 07:39:00", tz = "America/Halifax"),
+#          datetime_adt <= as_datetime("2026-05-02 07:42:00", tz = "America/Halifax")) |>
+#   select(datetime_adt, gps_source, vessel_lat, vessel_lon, strata) |>
+#   arrange(datetime_adt)
+# 
+# compare_window
+# 
+# # 2. Were any of these rows touched by the erroneous-GPS replacement step?
+# # (only meaningful if you still have result_effort/replacement_check_effort in your environment)
+# replacement_check_effort |>
+#   filter(orig_datetime_adt >= as_datetime("2026-05-02 07:39:00", tz = "America/Halifax"),
+#          orig_datetime_adt <= as_datetime("2026-05-02 07:42:00", tz = "America/Halifax"))
+# 
+# # 3. Quantify the offset: pair each Garmin fix with the nearest-in-time Mysticetus fix
+# #    and compute the distance between them (in meters)
+# garmin_dt <- as.data.table(compare_window)[gps_source == "garmin"]
+# mysticetus_dt <- as.data.table(compare_window)[gps_source == "mysticetus"]
+# setkey(garmin_dt, datetime_adt)
+# setkey(mysticetus_dt, datetime_adt)
+# 
+# paired <- garmin_dt[mysticetus_dt, on = "datetime_adt", roll = "nearest",
+#                     .(datetime_adt,
+#                       garmin_lat = vessel_lat, garmin_lon = vessel_lon, garmin_strata = strata,
+#                       mysticetus_lat = i.vessel_lat, mysticetus_lon = i.vessel_lon, mysticetus_strata = i.strata)]
+# 
+# paired[, dist_m := geosphere::distHaversine(
+#   cbind(garmin_lon, garmin_lat), cbind(mysticetus_lon, mysticetus_lat))]
+# 
+# paired[order(-dist_m)]
+# 
+# # Plot to inspect
+# leaflet(compare_window) |>
+#   addProviderTiles(providers$CartoDB.Positron) |>
+#   addPolygons(data = studyarea_shp |> filter(WEA == "French/Middle Bank"),
+#               color = "black", weight = 1, fillOpacity = 0.05) |>
+#   addCircleMarkers(lng = ~vessel_lon, lat = ~vessel_lat,
+#                    color = ~ifelse(gps_source == "garmin", "blue", "red"),
+#                    radius = 4, label = ~paste(gps_source, datetime_adt)) |>
+#   addLegend("bottomright", colors = c("blue", "red"), labels = c("garmin", "mysticetus"))
+
+
+# Select columns of interest, fill gaps and 
+# create variable for daily 'realized' vs 'available' time window for effort/operations
+gps_effort1 <- gps_effort |>
   # Select columns of interest
-  select(datetime_utc, datetime_adt, date_adt, vessel_lat, vessel_lon,
-         Vessel, Strata, start.effort_adt, end.effort_adt, Effort, 
+  select(datetime_utc, datetime_adt, date_adt, vessel_lat, vessel_lon, gps_source,
+         Vessel, strata, start.effort_adt, end.effort_adt, Effort, 
          Action, Transect_ID, Port_obs, Stb_obs, BigEye_obs, Data_recorder,
-         Sea_state, Swell, Port_vis, Stb_vis,Precipitation,
+         Sea_state, Swell, Port_vis, Stb_vis, Precipitation,
          Glare_int, Glare_left, Glare_right, sog_kt, cog_t, Notes, QAQC_notes) |>
+  # Strip stray "names" attribute carried over from the join (shows as "Named chr" in str())
+  mutate(Transect_ID = unname(Transect_ID)) |>
   arrange(datetime_adt) |>
   group_by(date_adt) |>
-  # Fill the blanks downward (for specific columns)
-  fill(c(Strata, Effort, start.effort_adt, end.effort_adt,
+  # Fill the blanks downward (state/categorical columns only)
+  fill(c(strata, Effort, start.effort_adt, end.effort_adt,
          Transect_ID, Port_obs, Stb_obs, BigEye_obs, Data_recorder,
          Sea_state, Swell, Port_vis, Stb_vis, Precipitation, Glare_int,
-         Glare_left, Glare_right, sog_kt, cog_t), .direction = "down") |>
-  # Fill daily bounds upward
+         Glare_left, Glare_right), .direction = "down") |>
+  # Fill daily bounds upward (captures rows before the first logged effort entry)
   fill(c(start.effort_adt, end.effort_adt), .direction = "up") |>
-  # Define 'realized' effort window
-  mutate(real_effort_window = case_when(
-    date_adt %in% as.Date(c("2026-05-01", "2026-05-04", "2026-05-12")) ~ FALSE, # Entirely off-effort dates
-    between(datetime_adt, start.effort_adt, end.effort_adt) ~ TRUE, # Daily effort window
-    TRUE ~ FALSE)) |>
-  # Define 'available' effort window, which corresponds a fixed time window each date_adt that was "available" to conduct effort
-  mutate(start.avail.effort_adt = as.POSIXct(paste(date_adt, "06:30:00"), tz = "America/Halifax"), 
-         end.avail.effort_adt = as.POSIXct(paste(date_adt, "19:00:00"), tz = "America/Halifax"),
-         avail_effort_window = datetime_adt >= start.avail.effort_adt & datetime_adt <= end.avail.effort_adt) |>
-  relocate(c(real_effort_window, avail_effort_window), .after = end.effort_adt) |>
+  # Fill in the Vessel name for all rows
+  fill(Vessel, .direction = "downup") #|>
+# TBD if keeping...
   # Replace remaining missing effort values and in_effort_window values
-  mutate(Effort = replace_na(Effort, "Off"),
-         real_effort_window = replace_na(real_effort_window, FALSE),
-         # Remove any Transect_IDs if in Transit-On effort
-         Transect_ID = case_when(Effort == "Transit-On" ~ NA,
-                                 TRUE ~ Transect_ID)) |>
-  ungroup() |>
-  # Set certain columns to NA if Effort = Off
-  mutate(across(c(Transect_ID, Port_obs, Stb_obs, BigEye_obs, Data_recorder,
-        Sea_state, Swell, Port_vis, Stb_vis, Precipitation, Glare_int,
-        Glare_left, Glare_right), ~ replace(.x, Effort == "Off", NA)))
-
-
-# Flag suspicious GPS points & replace with closest datetime's lat/lon IF that is appropriate; adjust as needed
-
-# Convert to data.table
-gps_dt <- as.data.table(gps_effort)
-
-# Create a column of "suspicious_gps" positions if outside of the study area bounding box
-gps_dt[, suspicious_gps :=
-         vessel_lon < xmin |
-         vessel_lon > xmax |
-         vessel_lat < ymin |
-         vessel_lat > ymax |
-         is.na(vessel_lat) |
-         is.na(vessel_lon)]
-
-# create “good reference table"; keep ONLY valid GPS fixes:
-good_dt <- gps_dt[
-  suspicious_gps == FALSE,
-  .(datetime_adt, vessel_lat, vessel_lon)]
-
-# Rolling join (nearest time match); match each suspicious point to nearest valid timestamp
-setkey(good_dt, datetime_adt)
-setkey(gps_dt, datetime_adt)
-
-gps_dt[suspicious_gps == TRUE,
-         c("vessel_lat", "vessel_lon") :=
-           good_dt[.SD, on = "datetime_adt", roll = "nearest",
-                   .(vessel_lat, vessel_lon)] ]
-
-# Convert back to tibble & remove 'suspicious_GPS' column
-gps_effort1 <- as_tibble(gps_dt) |>
-  select(-(suspicious_gps))
-
+  # mutate(Effort = replace_na(Effort, "Off"),
+  #        # Remove any Transect_IDs if in Transit-On effort
+  #        Transect_ID = case_when(Effort == "Transit-On" ~ NA_character_,
+  #                                TRUE ~ Transect_ID)) |>
+  # ungroup() |>
+  # # Set certain columns to NA if Effort = Off
+  # mutate(across(c(Transect_ID, Port_obs, Stb_obs, BigEye_obs, Data_recorder,
+  #                 Sea_state, Swell, Port_vis, Stb_vis, Precipitation, Glare_int,
+  #                 Glare_left, Glare_right), ~ replace(.x, Effort == "Off", NA)))
 
 # Checks
 summary(gps_effort1$vessel_lat)
 summary(gps_effort1$vessel_lon)
 unique(gps_effort1$date_adt)
-unique(sort(gps_effort1$Transect_ID))
-table(gps_effort1$date_adt, gps_effort1$Strata)
+unique(gps_effort1$Transect_ID)
+table(gps_effort1$date_adt, gps_effort1$strata)
 
 # Export
-write_csv(gps_effort1, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL.csv"))
-
-# Export different versions for easier QGIS mapping
-
-# Available observation window (12.5h per day) only
-g1 <- gps_effort1 |>
-  filter(avail_effort_window == TRUE) 
-
-write_csv(g1, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_avail_effort_window_only.csv"))
-
-# Realized effort window only
-g2 <- gps_effort1 |>
-  filter(real_effort_window == TRUE) 
-
-write_csv(g2, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_real_effort_window_only.csv"))
-
-# Available observation window (12.5h per day) within FMB only
-g3 <- gps_effort1 |>
-  filter(avail_effort_window == TRUE) |>
-  filter(Strata == "FMB")
-
-write_csv(g3, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_FMB_avail_effort_window_only.csv"))
-
-# Available observation window (12.5h per day) within SB only
-g4 <- gps_effort1 |>
-  filter(avail_effort_window == TRUE) |>
-  filter(Strata == "SB")
-
-write_csv(g4, file = paste0(here(),"/Data_summaries/tables/spring2026_gps_track_effortenv_FINAL_SB_avail_effort_window_only.csv"))
+write_csv(gps_effort1, paste0(path2data, "/Data_summaries/data_combined_cleaned/spring2026_gps_track_effortenv_FINAL.csv"))
 
 
 
 #----SIGHTINGS----
 
 # List all Sighting csv files
-sight_files <- list.files(file.path(paste0(here(), "/Mysti_data")),
-                          pattern = "Sighting\\.csv$", 
-                          recursive = TRUE, full.names = TRUE)
+sight_files <- list.files(file.path(paste0(path2data, "/Mysti_data")),
+                           pattern = "Sighting\\.csv$", 
+                           recursive = TRUE, full.names = TRUE)
 
 # Import & combine all Sighting files
 sight <- sight_files |>
   map_df(~read_csv(.,
                    col_types = cols(.default = col_character()),
                    show_col_types = FALSE))
+
+# Inspect any rows that were marked for deletion which did not get deleted....
+# TO DO
+
+
 
 # Data wrangling
 sight1 <- sight |>
@@ -461,19 +790,24 @@ sight1 <- sight |>
          Distance_m = as.numeric(Distance_m),
          Angle_abs = as.numeric(Angle_abs),
          Observer = as.factor(Observer),
-         Vessel = "Teleost",
+         # Set vessel (according to dataset)
+         Vessel = case_when(dataset == "Summer2026" ~ "KopitHopson",
+                            TRUE ~ "Teleost"),
          # Remove the parentheses, everything inside them & any extra space before the parentheses
          Obs_platform = trimws(gsub("\\s*\\(.*\\)", "", Obs_platform)),
          # Adjust Distance_tool entries
          Distance_tool = case_when(Distance_tool %in% c("Fujinon25x150", "BigEyes") ~ "BigEyes_Fujinon25x150",
                                    TRUE ~ Distance_tool),
-         # Create "strata" column based on dates within each strata (or not in strata)
-         Strata = case_when(date_adt %in% as.Date(c("2026-04-23", "2026-05-01", "2026-05-04")) ~ "Not.in.strata",
-                            date_adt >= "2026-05-06" & date_adt <= "2026-05-10" ~ "SB",
-                            TRUE ~ "FMB")) |>
+         
+         
+         # TO DO: Update this with the same way that strata was assigned for gps_effort df
+         #Strata = ....
+  
+  
+  # Format the lat/lon columns
   separate(GPS_pos, into = c("lat_deg", "lat_min", "lat_dir",
                              "lon_deg", "lon_min", "lon_dir"),
-           sep = "\\s+", remove = FALSE) %>%
+           sep = "\\s+", remove = FALSE) |>
   mutate(lat_deg = as.numeric(lat_deg),
          lat_min = as.numeric(lat_min),
          lon_deg = as.numeric(lon_deg),
@@ -501,8 +835,10 @@ sight1 <- sight |>
   mutate(datetime_missing = is.na(`Datetime_UTC (UTC)`) | trimws(`Datetime_UTC (UTC)`) == "",
          # Check for repeated datetimes in the `Datetime_UTC (UTC)`coumn -- due to using the shortcut "Ctl-Shft-+" which copies the previous row
          datetime_duplicates = coalesce(`Datetime_UTC (UTC)` == lag(`Datetime_UTC (UTC)`), FALSE),
-         # Check whether the rows without Yes/No in Photos actually had photos; if not, assign NA to "No"
-         Photos_taken = replace_na(Photos_taken, "No")) |>
+         # Not needed for now...
+         #Check whether the rows without Yes/No in Photos actually had photos; if not, assign NA to "No"
+         #Photos_taken = replace_na(Photos_taken, "No")
+         ) |>
   relocate(c(datetime_missing, datetime_duplicates)) |>
   # Select to arrange column order
   select(Vessel, Strata, "Datetime_UTC_locked (UTC)", "Datetime_UTC (UTC)", datetime_utc, datetime_adt,
@@ -514,9 +850,7 @@ sight1 <- sight |>
          datetime_missing, datetime_duplicates)
 
 
-#...............................................................................
-# QA/QC
-#...............................................................................
+# Checks
 
 # Manually verify all "datetime_missing" & "datetime_duplicates" columns marked as TRUE
 # Verify the Notes to see if the `Datetime_UTC (UTC)` was manually adjusted
@@ -629,6 +963,15 @@ sight_gps_effort <- sight3 |>
 write_csv(sight_gps_effort, file = paste0(here(), "/Data_summaries/tables/spring2026_MM_sightings_gps_effort_FINAL.csv"))
 
 
+#----QUICK MAPS + SUMMARY TABLES----
+
+
+
+
+
+
+
+# TO DO: MOVE TO SCRIPT # 3.....
 
 
 #-------------------------------------------
