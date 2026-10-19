@@ -21,20 +21,15 @@ library(kableExtra)
 library(scales)
 library(lubridate)
 
-# This report is rendered from within 1_in-survey_summaries.r, AFTER that
-# script has built table1, table2a, table2b_strata, table2b_total, table3a,
-# table3b, map1, map2, gps_effort1, sight2, and dataset. rmarkdown::render()
-# is called with envir = environment() from that script, so every object
+# This report is rendered from within 1_in-survey_summaries.r.
+# rmarkdown::render() is called with envir = environment() from that script, so every object
 # referenced below already exists -- nothing here re-reads or re-derives
 # any data. All tables and maps are shown exactly as the script produces
 # them (cumulative across the whole survey to date), with no per-day filtering.
 ```
 
 ```{r helpers}
-# Render a table, or a friendly message if a table happens to be empty.
-# knitr::asis_output() and the kableExtra object both have a registered
-# knit_print() method, so returning one of them as the chunk's last
-# expression is enough -- no explicit print() and no results='asis' needed.
+# Render a table
 show_table <- function(df, caption = NULL, align = NULL, bold_rows = NULL) {
   if (nrow(df) == 0) {
     knitr::asis_output("*No data available.*")
@@ -53,7 +48,8 @@ show_table <- function(df, caption = NULL, align = NULL, bold_rows = NULL) {
 knitr::asis_output(paste0(
   '<p style="color: darkred;">',
   "<strong>Important:</strong> this is a preliminary, within-survey summary report. ",
-  "The data still need to be thoroughly error-checked. This report is for internal use only.",
+  "The data still need to be thoroughly error-checked. This report is for internal use only ",
+  "and covers the marine mammal component of the survey only.",
   "</p>"
 ))
 ```
@@ -67,7 +63,7 @@ vessel_name <- gps_effort1 |>
   pull(Vessel) |>
   first()
 
-all_dates  <- c(gps_effort1$date_adt, sight2$date_adt)
+all_dates  <- c(gps_effort1$date_adt, effort2$date_adt)
 first_date <- max(suppressWarnings(min(all_dates, na.rm = TRUE)), survey_start)
 last_date  <- suppressWarnings(max(all_dates, na.rm = TRUE))
 
@@ -102,14 +98,29 @@ pct_remaining_days <- scales::percent(days_remaining / survey_total_days, accura
 pct_transects_completed <- table2b_total$Prop_completed
 pct_transects_label     <- scales::percent(pct_transects_completed, accuracy = 1)
 
+# MANUAL: update these values (days) as needed
+time_lost_manual <- c(
+  "SAR tasking"   = 2.3,
+  "Vessel repair" = 2.25,
+  "Crew change"   = 0.2
+)
+
+# Bad weather is calculated in 1_in-survey_summaries.R
+time_lost <- c(time_lost_manual,
+               "Bad weather (BFT ≥ 6 or vis < 500m)" = weather_lost_days-2) # minus 2 because those are captured by the SAR
+
 knitr::asis_output(paste0(
   "## Overall Survey Progress\n\n",
   "**Number of planned survey days:** ", survey_total_days, " (", survey_days_range_label, ")  \n",
   "**Number of completed survey days:** ", days_completed, " (", pct_completed_days, ")  \n",
   "**Number of remaining survey days:** ", days_remaining, " (", pct_remaining_days, ")  \n",
   "**Number of planned transects:** ", n_transects_planned, "  \n",
-  "**Number of completed transects (On or Bridge-On effort):** ", n_transects_completed, "  \n\n"
+  "**Number of completed transects (across all effort states):** ", n_transects_completed_any, "  \n",
+  "**Survey time lost:**\n\n",
+  paste0("* ", names(time_lost), ": ", round(time_lost, 1), " d", collapse = "\n"),
+  "\n* **Total: ", round(sum(time_lost), 1), " d**\n\n"
 ))
+
 ```
 
 
@@ -219,7 +230,7 @@ map1
 ```{r table3a}
 show_table(
   table3a,
-  caption = "Table 3. Marine mammal sighting events and number of individuals, by date and species."
+  caption = "Table 3. Sighting events and number of individuals, by date and species. Confirmed and possible re-sights removed. Includes both 'on-effort' and 'incidental' sightings."
 )
 ```
 
@@ -228,7 +239,7 @@ show_table(
 ```{r table3b}
 show_table(
   table3b_display,
-  caption = "Table 4. Cumulative marine mammal sighting events and number of individuals, by species.",
+  caption = "Table 4. Cumulative sighting events and number of individuals, by species. Confirmed and possible re-sights removed. Includes both 'on-effort' and 'incidental' sightings. Only marine mammals and turtles are shown.",
   bold_rows = nrow(table3b_display)
 )
 ```
@@ -242,7 +253,7 @@ map2
 </div>
 
 
-*Figure 2. Cumulative marine mammal sightings, color-coded by species, and the realized trackline (within each strata).*
+*Figure 2. Cumulative sightings, color-coded by species, and the realized trackline (within each strata).*
 
 <br><br>
 
