@@ -1,0 +1,253 @@
+---
+title: "WEAWAVS - Survey Progress Report"
+subtitle: "`r if (is.na(params$report_date)) '' else params$report_date`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    df_print: kable
+params:
+  report_date: !r NA
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(kableExtra)
+library(scales)
+library(lubridate)
+
+# This report is rendered from within 1_in-survey_summaries.r, AFTER that
+# script has built table1, table2a, table2b_strata, table2b_total, table3a,
+# table3b, map1, map2, gps_effort1, sight2, and dataset. rmarkdown::render()
+# is called with envir = environment() from that script, so every object
+# referenced below already exists -- nothing here re-reads or re-derives
+# any data. All tables and maps are shown exactly as the script produces
+# them (cumulative across the whole survey to date), with no per-day filtering.
+```
+
+```{r helpers}
+# Render a table, or a friendly message if a table happens to be empty.
+# knitr::asis_output() and the kableExtra object both have a registered
+# knit_print() method, so returning one of them as the chunk's last
+# expression is enough -- no explicit print() and no results='asis' needed.
+show_table <- function(df, caption = NULL, align = NULL, bold_rows = NULL) {
+  if (nrow(df) == 0) {
+    knitr::asis_output("*No data available.*")
+  } else {
+    tbl <- knitr::kable(df, digits = 2, caption = caption, row.names = FALSE, align = align) |>
+      kableExtra::kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+    if (!is.null(bold_rows)) {
+      tbl <- tbl |> kableExtra::row_spec(bold_rows, bold = TRUE)
+    }
+    tbl
+  }
+}
+```
+
+```{r disclaimer-block}
+knitr::asis_output(paste0(
+  '<p style="color: darkred;">',
+  "<strong>Important:</strong> this is a preliminary, within-survey summary report. ",
+  "The data still need to be thoroughly error-checked. This report is for internal use only.",
+  "</p>"
+))
+```
+
+```{r survey-info}
+survey_start <- as.Date("2026-09-11")
+survey_end   <- as.Date("2026-09-29")
+
+vessel_name <- gps_effort1 |>
+  filter(!is.na(Vessel)) |>
+  pull(Vessel) |>
+  first()
+
+all_dates  <- c(gps_effort1$date_adt, sight2$date_adt)
+first_date <- max(suppressWarnings(min(all_dates, na.rm = TRUE)), survey_start)
+last_date  <- suppressWarnings(max(all_dates, na.rm = TRUE))
+
+date_range_label <- if (format(first_date, "%Y-%m") == format(last_date, "%Y-%m")) {
+  paste0(format(first_date, "%B %d"), " to ", format(last_date, "%d, %Y"))
+} else {
+  paste0(format(first_date, "%B %d, %Y"), " to ", format(last_date, "%B %d, %Y"))
+}
+```
+
+```{r survey-info-block}
+knitr::asis_output(paste0(
+  "**Survey:** ", dataset, "  \n",
+  "**Vessel:** ", vessel_name, "  \n",
+  "**Data range covered:** ", date_range_label, "  \n"
+))
+```
+
+
+```{r survey-progress}
+report_ref_date <- if (is.na(params$report_date)) Sys.Date() else as.Date(params$report_date)
+
+survey_total_days       <- as.numeric(survey_end - survey_start) + 1
+survey_days_range_label <- paste0("Sept ", format(survey_start, "%d"), " to ", format(survey_end, "%d"))
+
+days_completed <- min(max(as.numeric(report_ref_date - survey_start) + 1, 0), survey_total_days)
+days_remaining <- survey_total_days - days_completed
+
+pct_completed_days <- scales::percent(days_completed / survey_total_days, accuracy = 1)
+pct_remaining_days <- scales::percent(days_remaining / survey_total_days, accuracy = 1)
+
+pct_transects_completed <- table2b_total$Prop_completed
+pct_transects_label     <- scales::percent(pct_transects_completed, accuracy = 1)
+
+knitr::asis_output(paste0(
+  "## Overall Survey Progress\n\n",
+  "**Number of planned survey days:** ", survey_total_days, " (", survey_days_range_label, ")  \n",
+  "**Number of completed survey days:** ", days_completed, " (", pct_completed_days, ")  \n",
+  "**Number of remaining survey days:** ", days_remaining, " (", pct_remaining_days, ")  \n",
+  "**Number of planned transects:** ", n_transects_planned, "  \n",
+  "**Number of completed transects (On or Bridge-On effort):** ", n_transects_completed, "  \n\n"
+))
+```
+
+
+
+# Effort Summary
+
+<!-- ## Distance & Hours by Effort Status
+
+
+**Effort status definitions:**
+
+**ON**
+
+- On transect
+- 2 or 3 (if using Big Eyes) observers outside
+- Consistent scanning effort
+- Straight course and ~10 kts (>5 kts)
+- Weather within limits (sea state < 6, visibility > 500m)
+
+**BRIDGE-ON**
+
+- On transect
+- 2 observers inside bridge
+- Consistent scanning effort
+- Straight course and ~10 kts (>5 kts)
+- Weather within limits
+
+**TRANSIT-ON**
+
+- Not on transect
+- 2 observers inside or outside
+- Consistent scanning effort
+- Straight course and ~10 kts (>5 kts)
+- Weather within limits
+
+**OFF**
+
+- Sea state > 5
+- Visibility < 500 m
+
+-->
+
+```{r table1, include=FALSE}
+show_table(
+  table1,
+  caption = "Table 1. Distance (km) and hours (h) spent in each effort status, by date.",
+  align = "c"
+)
+
+```
+
+<!-- ## Proportion of Planned Transects Completed -->
+
+
+```{r table2a}
+table2a_display <- table2a |>
+  mutate(Realized_km   = round(Realized_km, 1),
+         Planned_km    = round(Planned_km, 1),
+         `% Completed` = scales::percent(Prop_completed, accuracy = 1)) |>
+  select(Date_adt, Transect_ID, Planned_km, Realized_km, `% Completed`)
+
+show_table(
+  table2a_display,
+  caption = paste0(
+    "Table 1. Proportion of transects completed during ",
+    "\"On\" or \"Bridge-On\" effort, by date and Transect ID."
+  )
+)
+```
+
+<!-- ## Cumulative Coverage by Strata -->
+
+```{r table2b}
+table2b_display <- bind_rows(
+  table2b_strata,
+  table2b_total |> mutate(Strata = "Overall") |> relocate(Strata)
+) |>
+  mutate(Realized_km   = round(Realized_km, 1),
+         Planned_km    = round(Planned_km, 1),
+         `% Completed` = scales::percent(Prop_completed, accuracy = 1)) |>
+  select(Strata, Planned_km, Realized_km, `% Completed`)
+
+show_table(
+  table2b_display,
+  caption = paste0(
+    "Table 2. Cumulative planned vs. realized transect coverage ",
+    "during \"On\" or \"Bridge-On\" effort, by strata and overall."
+  )
+)
+```
+
+## Effort Map
+
+<div style="display:flex; justify-content:center;">
+```{r map1-render, fig.height=6}
+map1
+```
+</div>
+
+
+<div style="max-width: 800px; margin: 0 auto;">
+*Figure 1. Cumulative realized trackline, color-coded by effort status, overlaid on the planned transects. The white circle corresponds to the position at report generation.*
+</div>
+
+# Sightings Summary
+
+```{r table3a}
+show_table(
+  table3a,
+  caption = "Table 3. Marine mammal sighting events and number of individuals, by date and species."
+)
+```
+
+<!--## Cumulative Sightings by Species-->
+
+```{r table3b}
+show_table(
+  table3b_display,
+  caption = "Table 4. Cumulative marine mammal sighting events and number of individuals, by species.",
+  bold_rows = nrow(table3b_display)
+)
+```
+
+## Sightings Map
+
+<div style="display:flex; justify-content:center;">
+```{r map2-render, fig.height=6}
+map2
+```
+</div>
+
+
+*Figure 2. Cumulative marine mammal sightings, color-coded by species, and the realized trackline (within each strata).*
+
+<br><br>
+
+**WEAWAVS Fall survey team:**
+
+Marine mammal observers: Katy Gavrilchuk, Natalie Colbourne, Amanda Babin, Sarah McLean, Olga Trela, Laurence Levesque
+Seabird observers: Holly Hogan, Johanna Bosch, Jacob Comeau-Ouellette\
+Program leads: Hilary Moors-Murphy (DFO), Carina Gjerdrum (ECCC)

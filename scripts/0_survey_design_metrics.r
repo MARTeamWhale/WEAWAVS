@@ -96,7 +96,8 @@ transects_df1 <- transects_df |>
   select(-swap_flag, -x1_new, -y1_new, -x2_new, -y2_new)
 
 # Export corrected transects_df
-write.csv(transects_df1, paste0(getwd(), "/WEAWAVS_2026-04-10_DFifield/Scenario 2 Spring 2026_transects_coords_corrected.csv"))
+write.csv(transects_df1, paste0(getwd(), "/WEAWAVS_2026-04-10_DFifield/Scenario 2 Spring 2026_transects_coords_corrected.csv"),
+          row.names = FALSE)
 
 
 #----CALCULATE SURVEY METRICS----
@@ -145,4 +146,62 @@ transects_df2 <- transects_df1 |>
 # Export 
 write.csv(transects_df2, paste0(getwd(), "/Scenario2_13-day_transects_with_metrics.csv"),  row.names = FALSE)
 
-      
+
+
+#----Split a shaepfile into two shapefiles----
+
+# Check the exact values in the field (helps catch typos/whitespace issues)
+unique(transects_shp$complement)
+
+# Split into two subsets
+shp_1 <- transects_shp[transects_shp$complement == "Complement 1", ]
+shp_2 <- transects_shp[transects_shp$complement == "Complement 2", ]
+
+# Write each subset as its own shapefile
+st_write(shp_1, paste0(getwd(), "/WEAWAVS_2026-04-10_DFifield/Planned_transects_Scenario2_Spring2026_complement_1_only.shp"))
+st_write(shp_2, paste0(getwd(), "/WEAWAVS_2026-04-10_DFifield/Planned_transects_Scenario2_Spring2026_complement_2_only.shp"))
+
+
+#----Convert Decimal degrees to Decimal minutes----
+
+# ---- Import ----
+
+base_dir <- "C:/Users/GavrilchukK/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Survey Design/WEAWAVS_2026-04-10_DFifield"
+
+compl1_FMB <- read.csv(file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement1_FMB.csv"), header = TRUE)
+compl2_FMB <- read.csv(file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement2_FMB.csv"), header = TRUE)
+compl1_SB  <- read.csv(file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement1_SB.csv"), header = TRUE)
+compl2_SB  <- read.csv(file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement2_SB.csv"), header = TRUE)
+
+str(compl1_FMB)
+
+# ---- Set these to match your actual column names ----
+
+lat_col <- "lat_dd"
+lon_col <- "lon_dd"
+
+# ---- Conversion: Decimal Degrees -> Degrees Decimal Minutes ----
+
+dd_to_ddm <- function(dd, hemi_pos, hemi_neg, digits = 3) {
+  hemi <- ifelse(dd >= 0, hemi_pos, hemi_neg)
+  deg  <- floor(abs(dd))
+  mins <- (abs(dd) - deg) * 60
+  sprintf("%d %.*f' %s", deg, digits, mins, hemi)   # no ° symbol
+}
+
+add_ddm <- function(df, lat_col, lon_col, digits = 3) {
+  df$lat_ddm <- dd_to_ddm(df[[lat_col]], "N", "S", digits)
+  df$lon_ddm <- dd_to_ddm(df[[lon_col]], "E", "W", digits)
+  df
+}
+
+compl1_FMB <- add_ddm(compl1_FMB, lat_col, lon_col)
+compl2_FMB <- add_ddm(compl2_FMB, lat_col, lon_col)
+compl1_SB  <- add_ddm(compl1_SB,  lat_col, lon_col)
+compl2_SB  <- add_ddm(compl2_SB,  lat_col, lon_col)
+
+# ---- Export ----
+write.csv(compl1_FMB, file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement1_FMB_DDM.csv"), row.names = FALSE)
+write.csv(compl2_FMB, file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement2_FMB_DDM.csv"), row.names = FALSE)
+write.csv(compl1_SB,  file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement1_SB_DDM.csv"),  row.names = FALSE)
+write.csv(compl2_SB,  file.path(base_dir, "TransectWaypoints_for_Teleost_WEAWAVS_Fall2026_complement2_SB_DDM.csv"),  row.names = FALSE)
