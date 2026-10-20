@@ -99,6 +99,7 @@ gps_mysti <- map_df(mysti_files, read_csv, show_col_types = FALSE) |>
   select(datetime_utc, vessel_lat_m, vessel_lon_m, sog_kt, cog_t) |>
   arrange(datetime_utc)
 
+
 # (2) Garmin GPS (second GPS source; daytime and nighttime)
 garmin_files <- list.files(file.path(paste0(path2data, "/Garmin_GPS")), pattern = "\\.gpx$", full.names = TRUE)
 
@@ -109,12 +110,11 @@ gps_garmin <- map_df(garmin_files, function(f){
   df |>
     mutate(
       datetime_utc = floor_date(as.POSIXct(time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"), unit = "second"),
-      # Rename lat/lon columns
       vessel_lon_g = coords[,1],
-      vessel_lat_g = coords[,2]) |>
+      vessel_lat_g = coords[,2],
+      garmin_file  = basename(f)) |>
     st_drop_geometry() |>
-    # Keep columns of interest
-    select(datetime_utc, vessel_lat_g, vessel_lon_g, track_fid, track_seg_id)
+    select(datetime_utc, vessel_lat_g, vessel_lon_g, track_fid, track_seg_id, garmin_file)
 }) |>
   # Remove track data before 2026-09-09
   filter(datetime_utc >= as.POSIXct("2026-09-09 00:00:00", tz = "UTC")) |>
@@ -123,14 +123,14 @@ gps_garmin <- map_df(garmin_files, function(f){
   # Remove any duplicate rows (from the overlap period of both Garmin devices)
   distinct() |>
   # Calculate speed over ground from consecutive GPS fixes
-  group_by(track_fid, track_seg_id) |>
+  group_by(garmin_file, track_fid, track_seg_id) |>
   mutate(dist_m = geosphere::distHaversine(
     cbind(vessel_lon_g, vessel_lat_g),
     cbind(lag(vessel_lon_g), lag(vessel_lat_g))),
     dt_sec = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "secs")),
     sog_kt = if_else(dt_sec > 0, (dist_m / dt_sec) * 1.943844, NA_real_)) |>
   ungroup() |>
-  select(datetime_utc, vessel_lat_g, vessel_lon_g, sog_kt)
+  select(datetime_utc, vessel_lat_g, vessel_lon_g, sog_kt, garmin_file)
 
 
 # Checking gaps in Garmin tracks...
@@ -192,78 +192,111 @@ gps_garmin <- map_df(garmin_files, function(f){
 
 #----COMBINE GPS DATA----
 
-# Start with Mysticetus and Garmin sources; if outstanding large (to be defined) GPS gaps remain, integrate the ship's NAV GPS source.
-gps <- bind_rows(gps_mysti, gps_garmin) |>
+# Source priority: Mysticetus > Garmin.
+# Garmin is only used where Mysticetus has no fixes, so the track never
+# interleaves receivers (interleaving creates small zig-zags between antennas
+# and false speed spikes over very short time steps).
+
+fill_tol_sec   <- 20   # use Garmin only if no Mysticetus fix within 20 s (Mysticetus logs every ~10 s)
+gap_report_min <- 5    # report outstanding gaps longer than this (minutes)
+
+# Seconds from each time in `t` to the nearest time in `ref`
+nearest_gap_sec <- function(t, ref) {
+  ref <- sort(unique(as.numeric(ref)))
+  t   <- as.numeric(t)
+  i   <- findInterval(t, ref)
+  prev_d <- ifelse(i > 0,           t - ref[pmax(i, 1)],              Inf)
+  next_d <- ifelse(i < length(ref), ref[pmin(i + 1, length(ref))] - t, Inf)
+  pmin(prev_d, next_d)
+}
+
+# Sequential plausibility filter: keep a fix only if it is reachable from the
+# last KEPT fix at <= max_speed_kt (jumps < min_jump_km always allowed).
+# Handles single-fix spikes AND two interleaved GPS streams (e.g. overlapping
+# Garmin units with one wrong position). If nothing has been kept for
+# reset_min minutes, the next fix is accepted so the filter can't lock up.
+plausible_track <- function(lat, lon, t, max_speed_kt = 25, min_jump_km = 0.5, reset_min = 30) {
+  n <- length(lat)
+  keep <- logical(n)
+  if (n == 0) return(keep)
+  rad  <- pi / 180
+  tnum <- as.numeric(t)
+  keep[1] <- TRUE
+  last <- 1
+  for (i in seq_len(n)[-1]) {
+    dt_h <- (tnum[i] - tnum[last]) / 3600
+    a <- sin((lat[i] - lat[last]) * rad / 2)^2 +
+      cos(lat[last] * rad) * cos(lat[i] * rad) * sin((lon[i] - lon[last]) * rad / 2)^2
+    d_km <- 2 * 6371.0088 * asin(sqrt(a))
+    if (d_km <= max(min_jump_km, max_speed_kt * 1.852 * dt_h) || dt_h * 60 > reset_min) {
+      keep[i] <- TRUE
+      last <- i
+    }
+  }
+  keep
+}
+
+
+# Step 1: Mysticetus, plus Garmin only where Mysticetus is absent
+gps_mysti1 <- gps_mysti |>
+  filter(!is.na(datetime_utc)) |>
+  distinct(datetime_utc, .keep_all = TRUE) |>    # duplicate Mysticetus rows
+  transmute(datetime_utc,
+            vessel_lat = vessel_lat_m, vessel_lon = vessel_lon_m,
+            sog_kt, cog_t, gps_source = "mysticetus")
+
+gps_garmin1 <- gps_garmin |>
+  filter(!is.na(datetime_utc)) |>
+  distinct(datetime_utc, .keep_all = TRUE) |>    # exact-second overlap of the two Garmin units
+  filter(nearest_gap_sec(datetime_utc, gps_mysti1$datetime_utc) > fill_tol_sec) |>
+  transmute(datetime_utc,
+            vessel_lat = vessel_lat_g, vessel_lon = vessel_lon_g,
+            sog_kt, cog_t = NA_real_, gps_source = "garmin")
+
+gps <- bind_rows(gps_mysti1, gps_garmin1) |>
   arrange(datetime_utc) |>
-  # Convert to Atlantic Daylight time
-  mutate(datetime_adt = with_tz(datetime_utc, tzone = "America/Halifax")) |> # with_tz() = converts the same moment in time to another timezone)
-  # Relocate to first columns
-  relocate(c(datetime_utc, datetime_adt)) |>
-  # There are some duplicates in the Mysticetus GPS rows
-  distinct()  |>
-  # Combine gps sources into just two columns (lat/lon)
-  mutate(vessel_lat = if_else(!is.na(vessel_lat_m), vessel_lat_m, vessel_lat_g),
-         vessel_lon = if_else(!is.na(vessel_lat_m), vessel_lon_m, vessel_lon_g),
-         gps_source = case_when(!is.na(vessel_lat_m) & !is.na(vessel_lon_m) ~ "mysticetus",
-                                !is.na(vessel_lat_g) & !is.na(vessel_lon_g) ~ "garmin",
-                                TRUE ~ NA_character_)) |>
-  arrange(datetime_utc) |>
-  # Remove rows before the first mysticetus GPS reading (in the Summer2026 there were some residual garmin tracks from May 11)
+  # Remove rows before the first Mysticetus reading (e.g. residual Garmin tracks)
   filter(datetime_utc >= min(datetime_utc[gps_source == "mysticetus"])) |>
+  mutate(datetime_adt = with_tz(datetime_utc, tzone = "America/Halifax")) |>
   select(datetime_utc, datetime_adt, vessel_lat, vessel_lon, sog_kt, cog_t, gps_source)
 
-# Export combined Mysticetus & Garmin GPS track
-#write.csv(gps, paste0(path2data, "/Data_summaries/data_combined_cleaned/WEAWAVS_", dataset, "_gps_mysti-garmin.csv"),
-#          row.names = FALSE)
 
-# Quick map check:
-# 
-# library(mapview)
-# 
-# # Note: The "API KEY REQUIRED" text comes from the basemap, not the data. 
-# # mapview's default background is CartoDB Positron, and CARTO now requires an 
-# # API key for those tiles, so it stamps that watermark over them. 
-# # Switching to basemaps that don't need a key fixes it.
-# mapviewOptions(basemaps = c("OpenStreetMap", "Esri.WorldImagery", "Esri.OceanBasemap"))
-# 
-# gps_sf <- gps |>
-#   filter(!is.na(vessel_lon), !is.na(vessel_lat)) |>
-#   st_as_sf(coords = c("vessel_lon", "vessel_lat"), crs = 4326)
-# 
-# mapview(gps_sf, cex = 1, lwd = 0,
-#         legend = FALSE,
-#         map.types = c("Esri.OceanBasemap"))
-# 
-# # To add a line through the GPS points:
-# gps_line <- gps_sf |>
-#   arrange(datetime_utc) |>
-#   summarise(do_union = FALSE) |>
-#   st_cast("LINESTRING")
-# 
-# # Gaps > 10 min: split into multiple lines/tracks
-# gps_segments <- gps_sf |>
-#   arrange(datetime_utc) |>
-#   mutate(
-#     gap_min = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "mins")),
-#     new_seg = is.na(gap_min) | gap_min > 10,
-#     seg_id  = cumsum(new_seg)
-#   ) |>
-#   group_by(seg_id) |>
-#   filter(n() >= 2) |>                       # a line needs at least 2 points
-#   summarise(
-#     start   = min(datetime_utc),
-#     end     = max(datetime_utc),
-#     n_fixes = n(),
-#     do_union = FALSE
-#   ) |>
-#   st_cast("LINESTRING")
-# 
-# gps_segments   # one row per continuous track section
-# 
-# mapview(gps_segments,
-#         color = "grey20", lwd = 1.5,
-#         legend = FALSE,
-#         map.types = "Esri.OceanBasemap")
+# Step 2: Drop missing / out-of-bounds positions
+gps_oob <- gps |>
+  filter(is.na(vessel_lat) | is.na(vessel_lon) |
+           vessel_lon < xmin | vessel_lon > xmax |
+           vessel_lat < ymin | vessel_lat > ymax)
+
+gps <- gps |>
+  anti_join(gps_oob, by = c("datetime_utc", "gps_source"))
+
+
+# Step 3: Drop implausible jumps (spikes, interleaved Garmin streams)
+gps_check <- gps |>
+  mutate(keep = plausible_track(vessel_lat, vessel_lon, datetime_utc))
+
+gps_rejected <- gps_check |> filter(!keep)
+
+gps <- gps_check |>
+  filter(keep) |>
+  select(-keep)
+
+# Review: what was removed
+count(gps_oob, gps_source)
+count(gps_rejected, date_adt = as_date(datetime_adt), gps_source)
+count(gps, gps_source)
+
+
+# Step 4: Outstanding gaps > 5 min in the cleaned track
+gps_gaps_out <- gps |>
+  mutate(gap_start_adt = lag(datetime_adt),
+         gap_min       = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "mins"))) |>
+  filter(gap_min > gap_report_min) |>
+  transmute(gap_start_adt,
+            gap_end_adt = datetime_adt,
+            gap_min     = round(gap_min, 1))
+
+gps_gaps_out |> print(n = Inf)
 
 
 #----LOAD EFFORT----

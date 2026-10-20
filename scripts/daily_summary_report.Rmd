@@ -225,6 +225,40 @@ map1
 *Figure 1. Cumulative realized trackline, color-coded by effort status, overlaid on the planned transects. The white circle corresponds to the position at report generation.*
 </div>
 
+
+## Environmental Conditions
+
+```{r table4a}
+table4a_display <- table4a |>
+  mutate(`% of time` = scales::percent(Prop_time, accuracy = 1)) |>
+  select(`Sea state (BFT)` = Sea_state_BFT,
+         `Hours` = Duration_h,
+         `% of time`)
+
+show_table(
+  table4a_display,
+  caption = "Table 3. Hours and proportion of survey time spent in each sea state (Beaufort), summed across all survey days.",
+  align = "c"
+)
+```
+
+```{r table4b}
+table4b_display <- table4b |>
+  mutate(`% of time` = scales::percent(Prop_time, accuracy = 1)) |>
+  select(`Visibility` = Visibility,
+         `Hours` = Duration_h,
+         `% of time`)
+
+show_table(
+  table4b_display,
+  caption = "Table 4. Hours and proportion of survey time spent in each visibility category (worst of port and starboard), summed across all survey days.",
+  align = "c"
+)
+```
+
+
+
+
 # Sightings Summary
 
 ```{r table3a}
