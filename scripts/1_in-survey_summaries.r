@@ -1,7 +1,15 @@
-##################################################
-# WEAWAVS: Within-survey summary tables and maps
-# (GPS track, effort, and sightings)
-##################################################
+################################################################################
+#
+# Script purpose: Produce within-survey summary tables and maps
+# Program: DFO Maritimes - Cetacean Research and Monitoring Program (CRMP)
+# Project: Wind Energy Area Wildlife Assessment Vessel Surveys (WEAWAVS)
+# Author: Katherine Gavrilchuk, with the assistance of Claude AI
+# Affiliation: Fisheries and Oceans Canada
+# Contact: katherine.gavrilchuk@dfo-mpo.gc.ca
+# Last updated: Oct 19, 2026
+# R version: 4.6.1
+#
+################################################################################
 
 #----LOAD PACKAGES----
 
@@ -887,46 +895,55 @@ env_seg |>
   group_by(cause) |>
   summarize(hours = sum(duration_h))
 
+
+
 #----TRANSECT COMPLETION IN ANY EFFORT STATE----
 
-# A fix counts toward a transect if it lies within max_dist_any_m of it,
-# regardless of effort state or Transect_ID (daily survey window only)
-max_dist_any_m <- 1000
+max_dist_any_m <- 500
 
 fix_any <- gps_effort1 |>
   filter(!is.na(vessel_lat), !is.na(vessel_lon)) |>
   left_join(survey_window, by = "date_adt") |>
   filter(datetime_adt >= win_start, datetime_adt <= win_end) |>
-  select(date_adt, datetime_adt, vessel_lon, vessel_lat) |>
+  arrange(datetime_adt) |>
+  mutate(fix_id = row_number()) |>                     # time order = row order
+  select(fix_id, date_adt, datetime_adt, vessel_lon, vessel_lat) |>
   st_as_sf(coords = c("vessel_lon", "vessel_lat"), crs = 4326)
 
-# Nearest planned transect, distance to it, and position along it
-near_idx <- st_nearest_feature(fix_any, transect_lines)
-fix_any$Transect_near <- transect_lines$Transect_ID[near_idx]
-fix_any$dist_m <- as.numeric(st_distance(fix_any, transect_lines[near_idx, ], by_element = TRUE))
-fix_any$frac <- st_line_project(
-  st_transform(st_geometry(transect_lines)[near_idx], 3347),
-  st_transform(st_geometry(fix_any), 3347),
+# All (fix, transect) pairs within the distance limit
+near_list <- st_is_within_distance(fix_any, transect_lines, dist = max_dist_any_m)
+pairs <- tibble(fix_id = rep(fix_any$fix_id, lengths(near_list)),
+                tr_idx = unlist(near_list))
+
+# Position of each fix along each nearby transect (0 = start, 1 = end)
+pairs$frac <- st_line_project(
+  st_transform(st_geometry(transect_lines)[pairs$tr_idx], 3347),
+  st_transform(st_geometry(fix_any)[pairs$fix_id], 3347),
   normalized = TRUE)
 
-# Covered intervals between consecutive fixes on the same transect
-cover_any <- fix_any |>
-  st_drop_geometry() |>
-  mutate(frac = if_else(dist_m <= max_dist_any_m, frac, NA_real_)) |>
-  arrange(datetime_adt) |>
-  group_by(date_adt) |>
-  mutate(next_frac = lead(frac),
-         next_tr   = lead(Transect_near),
+fix_info <- fix_any |> st_drop_geometry() |> select(fix_id, date_adt, datetime_adt)
+
+# Covered intervals: consecutive fixes (in time) both near the same transect
+cover_any <- pairs |>
+  mutate(Transect_ID = transect_lines$Transect_ID[tr_idx]) |>
+  left_join(fix_info, by = "fix_id") |>
+  arrange(Transect_ID, fix_id) |>
+  group_by(Transect_ID) |>
+  mutate(next_id   = lead(fix_id),
+         next_frac = lead(frac),
+         next_date = lead(date_adt),
          next_time = lead(datetime_adt)) |>
   ungroup() |>
-  filter(!is.na(frac), !is.na(next_frac), Transect_near == next_tr) |>
-  left_join(planned, by = c("Transect_near" = "Transect_ID")) |>
+  filter(next_id == fix_id + 1, next_date == date_adt) |>
+  left_join(planned, by = "Transect_ID") |>
   mutate(hop_h  = pmax(as.numeric(difftime(next_time, datetime_adt, units = "hours")), 1/3600),
          hop_km = abs(next_frac - frac) * Planned_km) |>
   filter(!(hop_km > 0.5 & hop_km / hop_h / 1.852 > 25)) |>      # skip GPS spikes
-  transmute(Transect_ID = Transect_near,
+  transmute(Transect_ID,
             s = pmin(frac, next_frac),
-            e = pmax(frac, next_frac))
+            e = pmax(frac, next_frac)) |>
+  # Always include the On/Bridge-On coverage, so any-state >= on-effort
+  bind_rows(cover_int |> select(Transect_ID, s, e))
 
 # Completion per transect (union across all dates)
 completion_any_state <- planned |>
@@ -941,8 +958,11 @@ n_transects_completed_any <- sum(completion_any_state$Prop_completed >= completi
 # Compare with the On/Bridge-On version
 n_transects_completed; n_transects_completed_any
 
-
-
+# Transects not yet completed (any effort state)
+incomplete_any <- completion_any_state |>
+  filter(Prop_completed < completion_threshold) |>
+  arrange(Transect_ID)
+incomplete_any
 
 
 # Quick checks

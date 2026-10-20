@@ -48,7 +48,7 @@ show_table <- function(df, caption = NULL, align = NULL, bold_rows = NULL) {
 knitr::asis_output(paste0(
   '<p style="color: darkred;">',
   "<strong>Important:</strong> this is a preliminary, within-survey summary report. ",
-  "The data still need to be thoroughly error-checked. This report is for internal use only ",
+  "The data still need to be thoroughly error-checked. This report is for internal use ",
   "and covers the marine mammal component of the survey only.",
   "</p>"
 ))
@@ -230,7 +230,7 @@ map1
 ```{r table3a}
 show_table(
   table3a,
-  caption = "Table 3. Sighting events and number of individuals, by date and species. Confirmed and possible re-sights removed. Includes both 'on-effort' and 'incidental' sightings."
+  caption = "Table 3. Sighting events and number of individuals, by date and species. Includes both 'on-effort' and 'incidental' sightings, re-sightings excluded."
 )
 ```
 
@@ -239,7 +239,7 @@ show_table(
 ```{r table3b}
 show_table(
   table3b_display,
-  caption = "Table 4. Cumulative sighting events and number of individuals, by species. Confirmed and possible re-sights removed. Includes both 'on-effort' and 'incidental' sightings. Only marine mammals and turtles are shown.",
+  caption = "Table 4. Cumulative sighting events and number of individuals, by species. Includes both 'on-effort' and 'incidental' sightings, re-sightings excluded.",
   bold_rows = nrow(table3b_display)
 )
 ```
@@ -253,11 +253,11 @@ map2
 </div>
 
 
-*Figure 2. Cumulative sightings, color-coded by species, and the realized trackline (within each strata).*
+*Figure 2. Cumulative sightings, color-coded by species (marine mammals and sea turtles only), and the realized trackline (within each strata).*
 
 <br><br>
 
-**WEAWAVS Fall survey team:**
+**WEAWAVS Fall Survey Team:**
 
 Marine mammal observers: Katy Gavrilchuk, Natalie Colbourne, Amanda Babin, Sarah McLean, Olga Trela, Laurence Levesque
 Seabird observers: Holly Hogan, Johanna Bosch, Jacob Comeau-Ouellette\
