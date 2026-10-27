@@ -24,7 +24,7 @@ library(leaflet)
 setwd("C:/Users/gavrilchukk/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/")
 
 # Specify dataset
-dataset = "Fall2026" # Spring2026, Summer2026, Fall2026, Winter2027
+dataset = "Spring2026" # Spring2026, Summer2026, Fall2026, Winter2027
 
 # Define paths to each dataset
 data_paths <- c(
