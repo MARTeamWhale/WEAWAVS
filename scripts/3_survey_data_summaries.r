@@ -1141,11 +1141,7 @@ save_map(map4, paste0("WEAWAVS_", dataset, "_map4_sightings-by-species.png"))
 
 
 
-#----WEAWAVS 2026: PRESENTATION FIGURES----
-#
-# Figures for a short slide deck for offshore wind energy managers.
-# Minimal, consistent styling; each figure is saved at the size it will
-# occupy on a 16:9 slide (13.33 x 7.5 in), so text appears at true size.
+#----SUMMARY SLIDES----
 
 
 #----PACKAGES----
@@ -1523,126 +1519,221 @@ slide2_timeuse
 save_slide(slide2_timeuse, "slide2_time-use", width = 12.3, height = 2.2)
 
 
-#----SLIDE 3: SIGHTINGS----
+#----SLIDE 3: SEASONAL SUMMARIES----
 
+# 3a: marine mammals (on-effort sightings on transect; from sight_slides)
+# 3b: seabirds (summary numbers provided by the seabird team, Excel file)
+#
 # Layout (3 parts, aligned by patchwork):
 #   left:   silhouette + group name for each row
-#   centre: bubble grid (species group x survey; bubble size = animals counted)
+#   centre: bubble grid (group x survey; bubble size = animals counted)
 #   bottom: per-survey numbers (animals counted, species identified)
+# Bubble sizes are scaled within each slide, so sizes can't be compared
+# between 3a and 3b.
 
-# Rows of the bubble grid: all groups except "Unidentified whales/dolphins"
-# ("Unknown cetacean": too few, and not assignable to a group). Those
-# sightings are still included in the per-survey "animals counted" totals.
+# Draws one summary slide.
+#   bubbles:    Survey_lab, Group, Individuals
+#   numbers:    Survey_lab, animals, species
+#   rows:       group names, top to bottom
+#   icon_specs: Group, taxon, angle, width (groups without an icon: leave out)
+make_slide3 <- function(bubbles, numbers, rows, icon_specs, caption,
+                        count_label = "animals counted",
+                        size_range = c(13, 30), label_size = 7, label_wrap = 15) {
+  
+  group_rows <- rev(rows)   # first row on top
+  
+  # (a) Bubble grid
+  bubbles <- bubbles |>
+    mutate(Group = factor(as.character(Group), levels = group_rows)) |>
+    complete(Survey_lab, Group, fill = list(Individuals = 0))
+  
+  p_bubbles <- ggplot(bubbles, aes(Survey_lab, Group)) +
+    geom_point(data = filter(bubbles, Individuals > 0),
+               aes(size = Individuals, colour = Survey_lab), alpha = 0.85) +
+    geom_text(aes(label = ifelse(Individuals > 0,
+                                 format(Individuals, big.mark = ",", trim = TRUE), "–")),
+              family = font_family, fontface = "bold", size = 5.5, colour = "grey10") +
+    scale_size(range = size_range, guide = "none") +
+    scale_colour_manual(values = survey_cols, guide = "none") +
+    scale_x_discrete(position = "top") +
+    scale_y_discrete(drop = FALSE) +
+    theme_slide(16) +
+    theme(axis.text.x = element_text(face = "bold", size = 21, margin = margin(b = 8)),
+          axis.text.y = element_blank())
+  
+  # (b) Silhouettes (PhyloPic, via rphylopic; needs internet). Credits printed.
+  icons <- icon_specs |>
+    mutate(uuid = map_chr(taxon, function(tx) {
+      for (nm in str_trim(str_split_1(tx, ";"))) {
+        u <- tryCatch(rphylopic::get_uuid(name = nm, n = 1), error = function(e) NA_character_)
+        if (!is.na(u) && length(u) > 0) { message(nm, ": found"); return(u) }
+      }
+      NA_character_
+    }))
+  
+  # optional vertical offset (dy) for each icon
+  if (!"dy" %in% names(icons)) icons$dy <- 0
+  icons$dy[is.na(icons$dy)] <- 0
+  
+  print(select(icons, Group, taxon, uuid))                        # check: a uuid for each
+  print(map(na.omit(icons$uuid), ~ tryCatch(rphylopic::get_attribution(uuid = .x),
+                                            error = function(e) NULL)))   # credits
+  
+  icons <- icons |>
+    filter(!is.na(uuid)) |>
+    mutate(Group = factor(Group, levels = group_rows),
+           img   = map2(uuid, angle, function(u, a) {
+             img <- rphylopic::get_phylopic(uuid = u)
+             if (a != 0) img <- rphylopic::rotate_phylopic(img, angle = a)
+             img
+           }))
+  
+  icon_x  <- 0.8    # icon centre
+  label_x <- 1.7    # group names start here
+  
+  icon_layers <- pmap(icons, function(Group, img, width, dy, ...) {
+    rphylopic::geom_phylopic(data = tibble(x = icon_x, y = as.numeric(Group) + dy),
+                             aes(x = x, y = y),
+                             img = img, width = width, fill = "grey35", colour = "grey35")
+  })
+  
+  group_labels <- tibble(Group = factor(group_rows, levels = group_rows),
+                         label = str_wrap(group_rows, label_wrap))
+  
+  p_icons <- ggplot() +
+    icon_layers +
+    geom_text(data = group_labels, aes(x = label_x, y = Group, label = label), hjust = 0,
+              family = font_family, size = label_size, colour = "grey20", lineheight = 0.9) +
+    scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) +
+    scale_y_discrete(limits = group_rows, drop = FALSE) +
+    coord_cartesian(clip = "off") +
+    theme_void()
+  
+  # (c) Per-survey numbers under the bubbles
+  nums <- numbers |>
+    pivot_longer(c(animals, species), names_to = "stat", values_to = "value") |>
+    mutate(y     = if_else(stat == "animals", 2, 1),
+           label = if_else(stat == "animals", count_label, "species identified"))
+  
+  p_numbers <- ggplot(nums, aes(Survey_lab, y)) +
+    geom_text(aes(label = format(value, big.mark = ",", trim = TRUE), colour = Survey_lab),
+              nudge_x = -0.05, hjust = 1,
+              family = font_family, fontface = "bold", size = 8, show.legend = FALSE) +
+    geom_text(aes(label = label), nudge_x = 0.02, hjust = 0,
+              family = font_family, size = 4.5, colour = "grey35") +
+    scale_colour_manual(values = survey_cols) +
+    scale_y_continuous(limits = c(0.5, 2.5)) +
+    theme_void()
+  
+  # Combine: icons | bubbles, numbers under the bubbles only
+  p_icons + p_bubbles + plot_spacer() + p_numbers +
+    plot_layout(ncol = 2, widths = c(1.5, 4), heights = c(4, 1)) +
+    plot_annotation(
+      caption = caption,
+      theme = theme(plot.caption = element_text(family = font_family, size = 11, colour = "grey45",
+                                                hjust = 0, margin = margin(t = 10))))
+}
+
+
+#----SLIDE 3A: MARINE MAMMALS----
+
+# Rows: all groups except "Unidentified whales/dolphins" ("Unknown cetacean":
+# too few, and not assignable to a group). Those sightings are still included
+# in the per-survey "animals counted" totals.
 bubble_groups <- setdiff(group_levels, "Unidentified whales/dolphins")
-group_rows    <- rev(bubble_groups)   # baleen whales on top
 
-# (a) Bubble grid
-bubbles <- sight_slides |>
+mm_bubbles <- sight_slides |>
   filter(Group %in% bubble_groups) |>
-  mutate(Group = factor(as.character(Group), levels = group_rows)) |>
   group_by(Survey_lab, Group) |>
-  summarize(Individuals = sum(Best_count, na.rm = TRUE), Groups = n(), .groups = "drop") |>
-  complete(Survey_lab, Group, fill = list(Individuals = 0, Groups = 0))
+  summarize(Individuals = sum(Best_count, na.rm = TRUE), .groups = "drop")
 
-# Bubble size: scale_size() with a minimum size, so even small counts get a
-# bubble big enough to hold their number (sizes still increase with the
-# count, but are no longer strictly proportional to it)
-slide3_bubbles <- ggplot(bubbles, aes(Survey_lab, Group)) +
-  geom_point(data = filter(bubbles, Individuals > 0),
-             aes(size = Individuals, colour = Survey_lab), alpha = 0.85) +
-  geom_text(aes(label = ifelse(Individuals > 0, format(Individuals, big.mark = ","), "–")),
-            family = font_family, fontface = "bold", size = 5.5, colour = "grey10") +
-  scale_size(range = c(13, 30), guide = "none") +
-  scale_colour_manual(values = survey_cols, guide = "none") +
-  scale_x_discrete(position = "top") +
-  scale_y_discrete(drop = FALSE) +
-  theme_slide(16) +
-  theme(axis.text.x = element_text(face = "bold", size = 21, margin = margin(b = 8)),
-        axis.text.y = element_blank())
+mm_numbers <- sight_slides |>
+  group_by(Survey_lab) |>
+  summarize(animals = sum(Best_count, na.rm = TRUE),
+            species = n_distinct(Species_base[!grepl("^Unknown|/", Species_base)]),
+            .groups = "drop")
 
-# (b) Silhouettes (PhyloPic, via the rphylopic package; needs internet).
-# One representative species per group; "Unidentified" has no icon.
-# PhyloPic images have individual licences (mostly CC0 / CC-BY): the
-# attribution for each is printed below; credit them on the slide if required.
-# Per icon: the species, a rotation (degrees; the fin whale image is drawn
-# head-up, so it is turned to lie horizontally like the others; use 90
-# instead of -90 if it ends up facing the wrong way) and a width (in x-axis
-# units; the panel runs from 0 to 5)
-icon_specs <- tribble(
+# Fin whale image is drawn head-up, so it is turned to lie horizontally
+# (use 90 instead of -90 if it faces the wrong way); width in x-axis units (panel 0-5)
+mm_icons <- tribble(
   ~Group,          ~taxon,                  ~angle, ~width,
   "Baleen whales", "Balaenoptera physalus",    -90,    1.5,
   "Dolphins",      "Delphinus delphis",          0,    1.2,
   "Porpoises",     "Phocoena phocoena",          0,    1.2,
   "Seals",         "Halichoerus grypus",         0,    1.2)
 
-icons <- icon_specs |>
-  mutate(uuid = map_chr(taxon, ~ tryCatch(rphylopic::get_uuid(name = .x, n = 1),
-                                          error = function(e) NA_character_)),
-         Group = factor(Group, levels = group_rows))
+slide3a <- make_slide3(
+  mm_bubbles, mm_numbers, rows = bubble_groups, icon_specs = mm_icons,
+  caption = "Number of animals from on-effort sightings made while surveying transects in the WEAs")
 
-icons                                                     # check: a uuid for each
-map(na.omit(icons$uuid), ~ tryCatch(rphylopic::get_attribution(uuid = .x),
-                                    error = function(e) NULL))   # credits
+slide3a
+save_slide(slide3a, "slide3a_sightings_marine-mammals", width = 12.3, height = 6.2)
 
-# Download each image and rotate it if needed
-icons <- icons |>
-  filter(!is.na(uuid)) |>
-  mutate(img = map2(uuid, angle, function(u, a) {
-    img <- rphylopic::get_phylopic(uuid = u)
-    if (a != 0) img <- rphylopic::rotate_phylopic(img, angle = a)
-    img
-  }))
 
-group_labels <- tibble(Group = factor(group_rows, levels = group_rows),
-                       label = str_wrap(group_rows, 15))
+#----SLIDE 3B: SEABIRDS----
 
-icon_x  <- 0.8    # icon centre
-label_x <- 1.7    # group names start here
+# Summary numbers from the seabird team. Sheet layout: one row per bird
+# group, columns Spring / Summer / Fall, then rows "Animals counted",
+# "Species" (number of species) and "Caption" (text in the Spring column).
+birds_raw <- read_excel("C:/Users/GavrilchukK/OneDrive - DFO-MPO/DFO MARITIMES_CRMP/WEAWAVS/Working data/WEAWAVS_Seabird_summaries_Spring-Summer-Fall2026.xlsx")
 
-# One layer per icon, so each can have its own width
-icon_layers <- pmap(icons, function(Group, img, width, ...) {
-  rphylopic::geom_phylopic(data = tibble(x = icon_x, y = Group), aes(x = x, y = y),
-                           img = img, width = width, fill = "grey35", colour = "grey35")
-})
+# The caption text makes the Spring column text, so convert back to numbers
+birds_tbl <- birds_raw |>
+  filter(Species != "Caption") |>
+  mutate(across(c(Spring, Summer, Fall), as.numeric))
 
-slide3_icons <- ggplot() +
-  icon_layers +
-  geom_text(data = group_labels, aes(x = label_x, y = Group, label = label), hjust = 0,
-            family = font_family, size = 7, colour = "grey20", lineheight = 0.9) +
-  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) +
-  scale_y_discrete(limits = group_rows, drop = FALSE) +
-  coord_cartesian(clip = "off") +
-  theme_void()
+bird_groups <- birds_tbl |>
+  filter(!Species %in% c("Animals counted", "Species")) |>
+  pull(Species)                                   # row order as in the sheet
 
-# (c) Per-survey numbers under the bubbles
-survey_numbers <- sight_slides |>
+# "Spring" -> "Spring 2026", etc.
+season_lab <- setNames(survey_labels, word(survey_labels, 1))
+
+birds_long <- birds_tbl |>
+  pivot_longer(c(Spring, Summer, Fall), names_to = "season", values_to = "value") |>
+  mutate(Survey_lab = factor(season_lab[season], levels = survey_labels))
+
+bird_bubbles <- birds_long |>
+  filter(Species %in% bird_groups) |>
+  transmute(Survey_lab, Group = Species, Individuals = value)
+
+bird_numbers <- birds_long |>
+  filter(Species %in% c("Animals counted", "Species")) |>
+  mutate(stat = if_else(Species == "Animals counted", "animals", "species")) |>
+  select(Survey_lab, stat, value) |>
+  pivot_wider(names_from = stat, values_from = value)
+
+# Check: groups add up to the "Animals counted" row in each season
+bird_check <- bird_bubbles |>
   group_by(Survey_lab) |>
-  summarize(animals = sum(Best_count, na.rm = TRUE),
-            species = n_distinct(Species_base[!grepl("^Unknown|/", Species_base)]),  # identified to species
-            .groups = "drop") |>
-  pivot_longer(c(animals, species), names_to = "stat", values_to = "value") |>
-  mutate(y     = if_else(stat == "animals", 2, 1),
-         label = if_else(stat == "animals", "animals counted", "species identified"))
+  summarize(sum_groups = sum(Individuals), .groups = "drop") |>
+  left_join(bird_numbers, by = "Survey_lab")
+bird_check
+stopifnot(all(bird_check$sum_groups == bird_check$animals))
 
-slide3_numbers <- ggplot(survey_numbers, aes(Survey_lab, y)) +
-  geom_text(aes(label = format(value, big.mark = ","), colour = Survey_lab), nudge_x = -0.05, hjust = 1,
-            family = font_family, fontface = "bold", size = 8, show.legend = FALSE) +
-  geom_text(aes(label = label), nudge_x = 0.02, hjust = 0,
-            family = font_family, size = 4.5, colour = "grey35") +
-  scale_colour_manual(values = survey_cols) +
-  scale_y_continuous(limits = c(0.5, 2.5)) +
-  theme_void()
+# Representative taxon per group ("Other" has no icon). If a taxon gets no
+# uuid, or its silhouette looks wrong, swap in another species.
+bird_icons <- tribble(
+  ~Group,                          ~taxon,                                                                          ~angle, ~width, ~dy,
+  "Alcids",                        "Uria aalge",                                                                         0,    0.6,   0,
+  "Gulls and Terns",               "Larus argentatus",                                                                   0,    1.0,   0,
+  "Shearwaters and Storm-Petrels", "Puffinus puffinus; Ardenna grisea; Ardenna; Puffinus; Calonectris; Procellariidae",  0,    1.0,   0,
+  "Gannets",                       "Morus bassanus",                                                                     0,    1.3,  -0.17,
+  "Phalaropes",                    "Phalaropus lobatus",                                                                 0,    0.8,   0)
 
-# Combine: icons | bubbles, numbers under the bubbles only
-slide3 <- slide3_icons + slide3_bubbles + plot_spacer() + slide3_numbers +
-  plot_layout(ncol = 2, widths = c(1.5, 4), heights = c(4, 1)) +
-  # Small note at the bottom of the slide
-  plot_annotation(
-    caption = paste("Number of animals from on-effort sightings made while surveying transects in the WEAs"),
-    theme = theme(plot.caption = element_text(family = font_family, size = 11, colour = "grey45",
-                                              hjust = 0, margin = margin(t = 10))))
-slide3
-save_slide(slide3, "slide3_sightings", width = 12.3, height = 6.2)
+slide3b <- make_slide3(
+  bird_bubbles, bird_numbers, rows = bird_groups, icon_specs = bird_icons,
+  caption = "Number of animals counted while surveying transects in the WEAs; marine species only",
+  count_label = "birds counted",
+  size_range  = c(14, 25),     # 6 rows: smaller bubbles so they don't overlap
+  label_size  = 6)
+
+slide3b
+save_slide(slide3b, "slide3b_sightings_seabirds", width = 12.3, height = 6.8)
+
+
+
+
 
 # (c) Optional: encounter rates (groups per 100 km on transect), the fair
 # comparison between surveys with different amounts of effort. Always
@@ -1692,7 +1783,10 @@ slide4 <- ggplot() +
   theme(legend.key  = element_rect(fill = NA, colour = NA),   # no grey box behind legend points
         # l = space between each point and its label; r = space before the next item
         legend.text = element_text(size = 19, margin = margin(l = 8, r = 22)),
-        strip.text  = element_text(face = "bold", size = 21, margin = margin(b = 8)))
+        strip.text  = element_text(face = "bold", size = 21, margin = margin(b = 8)),
+        legend.box.spacing = unit(2, "pt"),          # gap between maps and legend
+        legend.margin      = margin(0, 0, 0, 0),
+        plot.margin        = margin(t = 5, r = 5, b = 5, l = 5))
 
 slide4 <- slide4 +
   # Small note at the bottom of the slide
@@ -1700,9 +1794,9 @@ slide4 <- slide4 +
     caption = paste("On-effort sightings made while surveying transects in the WEAs"),
     theme = theme(plot.caption = element_text(family = font_family, size = 11, colour = "grey45",
                                               hjust = 0, margin = margin(t = 10))))
-slide4
-save_slide(slide4, "slide4_sightings-maps", width = 12.3, height = 6)
 
+slide4
+save_slide(slide4, "slide4_sightings-maps", width = 12.3, height = 4.8)
 
 
 
@@ -2310,20 +2404,17 @@ make_spp_slide <- function(d, caption_txt) {
 slide13a <- make_spp_slide(
   spp_A,
   paste("Number of sightings (number of animals) per species. On-effort sightings made on the",
-      "transects in the wind energy areas (French/Middle Bank and Sydney Bight);",
-      "repeat sightings excluded."))
+      "transects in the WEAs."))
 
 slide13b <- make_spp_slide(
   spp_B,
   paste("Number of sightings (number of animals) per species. All sighting types (on-effort and",
-        "incidental), within and outside the wind energy areas, including transits;",
-        "repeat sightings excluded."))
+        "incidental), within and outside the WEAs, including transits."))
 
 slide13c <- make_spp_slide(
   spp_wea_all,
   paste("Number of sightings (number of animals) per species. All sighting types (on-effort and",
-        "incidental), within the wind energy areas (French/Middle Bank and Sydney Bight);",
-        "repeat sightings excluded."))
+        "incidental), within the WEAs."))
 
 slide13a$plot
 save_slide(slide13a$plot, "slide13a_species-totals_WEA-on-effort", width = 12.3, height = 7)
@@ -2419,3 +2510,188 @@ spp_all |>
   group_by(Survey_lab, strata, Group) |>
   summarize(sightings = n(), animals = sum(Best_count, na.rm = TRUE), .groups = "drop") |>
   as_tibble() |> print(n = Inf)
+
+
+#----SLIDE 14: PROBABLE NORTH ATLANTIC RIGHT WHALE----
+
+# Single sighting recorded as "Unknown baleen whale" (conservative ID), shown
+# as a probable North Atlantic right whale (NARW). Left: Sydney Bight map with
+# the zoom box; right: close-up with depth contours and that day's on-transect
+# vessel track.
+
+# Settings
+narw_time_utc  <- ymd_hms("2026-09-25 18:09:18", tz = "UTC")
+narw_survey    <- "Fall2026"
+narw_col       <- "#1d3557"                   # sighting point (contrasts with red tracks)
+box_col        <- "grey10"                    # zoom box + close-up border
+track_col      <- survey_cols[["Fall 2026"]]  # On/Bridge-On tracks, as on slide 2
+
+main_xlim      <- c(-61.9, -58.5)             # left map extent (Sydney Bight)
+main_ylim      <- c(45.5, 47.35)
+
+inset_half_lon  <- 0.26    # was 0.30: smaller = more zoomed in
+inset_half_lat  <- 0.17    # was 0.20; keep about the same ratio so the panel shape holds
+inset_shift_lat <- 0.03    # moves the close-up north (degrees); bottom edge goes up
+
+box <- c(xmin = narw$map_lon - inset_half_lon,
+         xmax = narw$map_lon + inset_half_lon,
+         ymin = narw$map_lat + inset_shift_lat - inset_half_lat,
+         ymax = narw$map_lat + inset_shift_lat + inset_half_lat)
+
+contour_depths <- c(100, 200)                 # depth contours in the close-up (m)
+# Where the contour labels go: height in the close-up (0 = bottom, 1 = top).
+# Each label sits on its contour at the point nearest this height.
+contour_lab_y  <- 0.15
+
+# The sighting (matched by time, within 60 s)
+narw <- read_all_sightings(narw_survey) |>
+  mutate(datetime_utc = ymd_hms(datetime_utc, tz = "UTC", truncated = 3),
+         across(c(map_lat, map_lon, vessel_lat, vessel_lon, Best_count), as.numeric)) |>
+  filter(abs(as.numeric(difftime(datetime_utc, narw_time_utc, units = "secs"))) <= 60)
+
+stopifnot(nrow(narw) == 1)   # exactly one sighting should match
+narw |> select(datetime_utc, Species, Sgt_type, Effort_at_sgt, strata, Best_count,
+               map_lat, map_lon, Notes) |> glimpse()
+
+narw_time_adt <- with_tz(narw$datetime_utc, "America/Halifax")
+narw_date     <- as_date(narw_time_adt)
+
+# Close-up extent, centred on the sighting
+box <- c(xmin = narw$map_lon - inset_half_lon, xmax = narw$map_lon + inset_half_lon,
+         ymin = narw$map_lat - inset_half_lat, ymax = narw$map_lat + inset_half_lat)
+
+# Bathymetry for the close-up: 15 arc-second if available, else 1 arc-minute
+get_bathy <- function(res) marmap::getNOAA.bathy(
+  lon1 = box[["xmin"]] - 0.1, lon2 = box[["xmax"]] + 0.1,
+  lat1 = box[["ymin"]] - 0.1, lat2 = box[["ymax"]] + 0.1,
+  resolution = res, keep = TRUE)
+bathy_inset <- tryCatch(get_bathy(0.25), error = function(e) {
+  message("15 arc-second bathymetry not available; using 1 arc-minute"); get_bathy(1) })
+
+# Contour lines as a data frame (depths are negative elevations in marmap)
+
+# Smoothing the lines for illustrative purposes only
+smooth_k <- 5   # smoothing window in grid cells (odd number; 1 = no smoothing)
+
+# Moving-average smoothing of the depth grid (rows, then columns), so the
+# contours show the general shape of the slope rather than grid-cell steps
+smooth_grid <- function(m, k) {
+  if (k <= 1) return(m)
+  f  <- function(v) as.numeric(stats::filter(v, rep(1 / k, k), sides = 2))
+  m2 <- t(apply(m, 1, f))
+  apply(m2, 2, f)
+}
+z_smooth <- smooth_grid(unclass(bathy_inset), smooth_k)
+
+cl <- contourLines(x = as.numeric(rownames(bathy_inset)),
+                   y = as.numeric(colnames(bathy_inset)),
+                   z = z_smooth, levels = -contour_depths)
+
+contours <- map_dfr(seq_along(cl), \(i) tibble(lon = cl[[i]]$x, lat = cl[[i]]$y,
+                                               depth = -cl[[i]]$level, id = i))
+
+# One label per depth: on its contour, at the point nearest the chosen height,
+# kept away from the close-up's left/right edges
+lab_y <- box[["ymin"]] + contour_lab_y * (box[["ymax"]] - box[["ymin"]])
+x_pad <- 0.12 * (box[["xmax"]] - box[["xmin"]])
+
+# Label placement per depth:
+#   dx, dy = offset from the contour, as fractions of the close-up's width/height
+#            (negative = left / down)
+#   hjust  = 1: label ends at that point (sits to its left); 0: starts there (sits to its right)
+#   vjust  = 1: label hangs below the point; 0: sits above; 0.5: centred
+lab_place <- tibble(
+  depth = c(100,   200),
+  dx    = c(-0.04, -0.015),
+  dy    = c(0,     -0.015),
+  hjust = c(1,      1),
+  vjust = c(0.5,    1))
+
+lab_y <- box[["ymin"]] + contour_lab_y * (box[["ymax"]] - box[["ymin"]])
+x_pad <- 0.12 * (box[["xmax"]] - box[["xmin"]])
+
+contour_labs <- contours |>
+  filter(between(lon, box[["xmin"]] + x_pad, box[["xmax"]] - x_pad),
+         between(lat, box[["ymin"]], box[["ymax"]])) |>
+  group_by(depth) |>
+  slice_min(abs(lat - lab_y), n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  left_join(lab_place, by = "depth") |>
+  mutate(label   = paste(depth, "m"),
+         lab_lon = lon + dx * (box[["xmax"]] - box[["xmin"]]),
+         lab_lat = lat + dy * (box[["ymax"]] - box[["ymin"]]))
+
+
+contour_cols <- setNames(c("#a9bfd1", "#6f8fab")[seq_along(contour_depths)], contour_depths)
+
+# On-transect (On / Bridge-On) vessel track on the day of the sighting,
+# split at gaps > 10 min and at every change in and out of transect effort
+day_track <- gpseff_day |>
+  filter(Survey == narw_survey, date_adt == narw_date) |>
+  arrange(datetime_utc) |>
+  mutate(on_tr   = Effort %in% transect_states,
+         gap_min = as.numeric(difftime(datetime_utc, lag(datetime_utc), units = "mins")),
+         seg     = cumsum(coalesce(gap_min > 10, TRUE) | coalesce(on_tr != lag(on_tr), TRUE))) |>
+  filter(on_tr)
+
+# (a) Sydney Bight map with the zoom box and the sighting
+narw_main <- ggplot() +
+  land_layer +
+  geom_sf(data = studyarea_shp, fill = NA, colour = "grey55", linewidth = 1) +
+  geom_sf(data = filter(track_lines_all, Survey == narw_survey), colour = track_col, linewidth = 0.3) +
+  annotate("rect", xmin = box[["xmin"]], xmax = box[["xmax"]], ymin = box[["ymin"]], ymax = box[["ymax"]],
+           fill = NA, colour = box_col, linewidth = 0.7) +
+  geom_point(data = narw, aes(map_lon, map_lat), size = 6, colour = narw_col, alpha = 0.2) +
+  geom_point(data = narw, aes(map_lon, map_lat), shape = 21, size = 2.8,
+             fill = narw_col, colour = "white", stroke = 0.8) +
+  coord_sf(xlim = main_xlim, ylim = main_ylim, crs = 4326, expand = FALSE) +
+  labs(title = "Fall 2026 survey: Sydney Bight") +
+  theme_map_slide() +
+  theme(plot.title = element_text(face = "bold", size = 17, hjust = 0.5, margin = margin(b = 8)))
+
+# (b) Close-up
+narw_inset <- ggplot() +
+  land_layer +
+  geom_sf(data = studyarea_shp, fill = NA, colour = "grey55", linewidth = 1) +
+  geom_path(data = contours, aes(lon, lat, group = id, colour = factor(depth)), linewidth = 0.6) +
+  geom_text(data = contour_labs,
+            aes(lab_lon, lab_lat, label = label, colour = factor(depth),
+                hjust = hjust, vjust = vjust),
+            family = font_family, size = 3.8, fontface = "bold") +
+  scale_colour_manual(values = contour_cols, guide = "none") +
+  geom_path(data = day_track, aes(vessel_lon, vessel_lat, group = seg),
+            colour = track_col, linewidth = 0.6) +                 # On / Bridge-On
+  # Halo + point
+  geom_point(data = narw, aes(map_lon, map_lat), size = 11, colour = narw_col, alpha = 0.15) +
+  geom_point(data = narw, aes(map_lon, map_lat), shape = 21, size = 5,
+             fill = narw_col, colour = "white", stroke = 1.3) +
+  # Sighting label in the top-right corner; sea-coloured background hides
+  # any lines behind it (ggplot2 >= 4.0: use border.colour = NA instead of label.size = 0)
+  annotate("label",
+           x = box[["xmax"]] - 0.04 * (box[["xmax"]] - box[["xmin"]]),
+           y = box[["ymax"]] - 0.04 * (box[["ymax"]] - box[["ymin"]]),
+           hjust = 1, vjust = 1,
+           family = font_family, size = 5, lineheight = 0.95,
+           fill = "#eef3f7", label.size = 0, label.padding = unit(4, "pt"),
+           label = paste0("Probable NARW\n", format(narw_time_adt, "%d %b %Y, %H:%M ADT"))) +
+  
+  # raise width_hint until the bar reads 10 km (Try values between 0.3 and 0.35)
+  ggspatial::annotation_scale(location = "br", width_hint = 0.32, text_family = font_family,
+                              text_cex = 0.8, line_width = 0.5, bar_cols = c("grey40", "white")) +
+  coord_sf(xlim = box[c("xmin", "xmax")], ylim = box[c("ymin", "ymax")], crs = 4326, expand = FALSE) +
+  labs(title = "Sighting location") +
+  theme_map_slide() +
+  theme(plot.title   = element_text(face = "bold", size = 17, hjust = 0.5, margin = margin(b = 8)),
+        panel.border = element_rect(colour = box_col, fill = NA, linewidth = 1.2))
+
+slide14 <- (narw_main | narw_inset) +
+  plot_layout(widths = c(1, 1)) +
+  plot_annotation(
+    caption = paste(
+      "Probable North Atlantic right whale (NARW) sighting. Close-up: vessel track on the day of",
+      "the sighting; blue lines: depth (100 m, 200 m) contours (NOAA ETOPO)."),
+    theme = theme(plot.caption = element_text(family = font_family, size = 11, colour = "grey45",
+                                              hjust = 0, margin = margin(t = 10))))
+
+slide14
+save_slide(slide14, "slide14_probable-NARW", width = 12.3, height = 6)
